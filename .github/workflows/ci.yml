@@ -77,6 +77,10 @@ jobs:
         working-directory: app
         run: go test ./...
 
+      - name: Test bridge lab preflight
+        shell: pwsh
+        run: scripts/network/test-bridge-preflight.ps1
+
   guest-contract:
     name: Guest contract
     runs-on: ubuntu-latest
