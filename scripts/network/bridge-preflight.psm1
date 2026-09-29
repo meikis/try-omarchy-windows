@@ -1,5 +1,32 @@
 Set-StrictMode -Version Latest
 
+function Get-BridgeGuidsFromListing {
+    param([string]$Listing)
+    $rowPattern = '^\s*\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}[ \t]+[^\r\n]+$'
+    $lines = @($Listing -split '\r?\n')
+    if (@($lines | Where-Object { $_ -match '^\s*GUID[ \t]+\S' }).Count -ne 1) { throw 'Unrecognized Windows bridge listing.' }
+    foreach ($line in $lines) {
+        if ($line -notmatch '^\s*$|^\s*-+\s*$|^\s*GUID[ \t]+\S' -and $line -notmatch $rowPattern) {
+            throw 'Unrecognized Windows bridge listing.'
+        }
+    }
+    $rows = @($lines | ForEach-Object {
+        $row = [regex]::Match($_, $rowPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($row.Success) { $row }
+    })
+    $guids = @($rows | ForEach-Object { ([guid]$_.Groups[1].Value).ToString() })
+    if (@($guids | Select-Object -Unique).Count -ne $guids.Count -or
+        (@([regex]::Matches($Listing, '\{')).Count -ne $guids.Count)) { throw 'Unrecognized Windows bridge listing.' }
+    $guids
+}
+
+function Test-BridgeBinding {
+    param([string[]]$EnabledComponents)
+    # Current Windows members use the multiplexor protocol; ms_bridge is on
+    # the composite bridge adapter. Older bridge bindings are also occupied.
+    ('ms_implat' -in $EnabledComponents -or 'ms_bridge' -in $EnabledComponents)
+}
+
 # These functions inspect only. No driver install, elevation, network binding
 # changes or QEMU startup belongs in the preflight.
 function Test-BridgeDriverPackage {
@@ -95,7 +122,8 @@ function Get-BridgeHostSnapshot {
         $dhcp = @(Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.Dhcp -eq 'Enabled' })
         $routes = @(Get-NetRoute -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
-        $bindings = @(Get-NetAdapterBinding -Name $adapter.Name -IncludeHidden -ErrorAction Stop |
+        $bindings = @(Get-NetAdapterBinding -Name '*' -IncludeHidden -AllBindings -ErrorAction Stop |
+            Where-Object { $_.Name -eq $adapter.Name } |
             Where-Object { $_.Enabled })
         $boundIds = @($bindings | Select-Object -ExpandProperty ComponentID)
         [pscustomobject]@{
@@ -103,7 +131,7 @@ function Get-BridgeHostSnapshot {
             Media = [string]$adapter.MediaType; PhysicalMedia = [string]$adapter.PhysicalMediaType
             Status = [string]$adapter.Status; ComponentId = [string]$components[$guid]
             Dhcp = ($dhcp.Count -gt 0); IPv4Ready = ($ip.Count -gt 0); DefaultRoute = ($routes.Count -gt 0)
-            BridgeBound = ('ms_bridge' -in $boundIds); HyperVBound = ('vms_pp' -in $boundIds)
+            BridgeBound = (Test-BridgeBinding $boundIds); HyperVBound = ('vms_pp' -in $boundIds)
         }
     })
     $remote = [bool]($env:SSH_CONNECTION -or $env:SSH_CLIENT -or $env:SESSIONNAME -like 'RDP-*')
@@ -117,8 +145,8 @@ function Get-BridgeHostSnapshot {
     }
     [pscustomobject]@{
         Adapters = $adapters; RemoteSession = $remote; BridgeCommands = $bridgeCommands; Architecture = $architecture
-        ExistingBridge = (('ms_bridgemp' -in $adapters.ComponentId) -or $bridges -match '\{[0-9a-fA-F-]{36}\}'); Driver = $driver
+        ExistingBridge = (('ms_bridgemp' -in $adapters.ComponentId) -or ('COMPOSITEBUS\MS_IMPLAT_MP' -in $adapters.ComponentId) -or @(Get-BridgeGuidsFromListing $bridges).Count -gt 0); Driver = $driver
     }
 }
 
-Export-ModuleMember -Function Test-BridgeDriverPackage, Get-BridgeLabAssessment, Get-BridgeHostSnapshot
+Export-ModuleMember -Function Test-BridgeDriverPackage, Get-BridgeLabAssessment, Get-BridgeHostSnapshot, Get-BridgeGuidsFromListing, Test-BridgeBinding

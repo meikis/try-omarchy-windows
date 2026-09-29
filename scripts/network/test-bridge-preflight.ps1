@@ -2,6 +2,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'bridge-preflight.psm1') -Force
 $passed = 0
+foreach ($ids in @(@('ms_implat'), @('ms_bridge'), @('ms_tcpip','ms_implat'))) {
+    if (-not (Test-BridgeBinding $ids)) { throw 'Native occupied bridge binding missed' }; $passed++
+}
+if (Test-BridgeBinding @('ms_tcpip','ms_tcpip6')) { throw 'Ordinary network binding treated as a bridge' }; $passed++
+$listing = "GUID Bridge Name`r`n{ACD0934C-8612-44E9-904A-472DA15252A7} Network Bridge`r`n"
+$guids = @(Get-BridgeGuidsFromListing $listing)
+if ($guids.Count -ne 1 -or $guids[0] -ne 'acd0934c-8612-44e9-904a-472da15252a7') { throw 'Native bridge listing not identified by GUID' }; $passed++
+if (@(Get-BridgeGuidsFromListing 'GUID Bridge Name').Count) { throw 'Empty listing produced a bridge' }; $passed++
+foreach ($bad in "{broken} Bridge", ($listing + $listing), '', 'Unexpected inventory error') {
+    $failed=$false; try { Get-BridgeGuidsFromListing $bad | Out-Null } catch { $failed=$true }
+    if (-not $failed) { throw 'Malformed bridge inventory accepted' }; $passed++
+}
 function New-Fixture {
     [pscustomobject]@{
         Architecture = 'AMD64'; RemoteSession = $false; BridgeCommands = $true; ExistingBridge = $false
