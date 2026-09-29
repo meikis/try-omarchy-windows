@@ -36,6 +36,7 @@ function Get-BridgeLabAssessment {
         [switch]$DedicatedTap
     )
     $blockers = [System.Collections.Generic.List[string]]::new()
+    if ($Snapshot.Architecture -ne 'AMD64') { $blockers.Add('x64-windows-required') }
     if (-not $DisposableLab) { $blockers.Add('disposable-lab-required') }
     if (-not $LocalConsole -or $Snapshot.RemoteSession) { $blockers.Add('local-console-required') }
     if (-not $DedicatedTap) { $blockers.Add('dedicated-tap-required') }
@@ -108,12 +109,15 @@ function Get-BridgeHostSnapshot {
     $remote = [bool]($env:SSH_CONNECTION -or $env:SSH_CLIENT -or $env:SESSIONNAME -like 'RDP-*')
     $commands = (& netsh.exe bridge help | Out-String)
     $bridgeCommands = ($LASTEXITCODE -eq 0 -and $commands -match '(?m)^create\s' -and $commands -match '(?m)^destroy\s')
+    $bridges = (& netsh.exe bridge list | Out-String)
+    $bridgeCommands = ($bridgeCommands -and $LASTEXITCODE -eq 0)
+    $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     $driver = if ($DriverDirectory) { Test-BridgeDriverPackage $DriverDirectory } else {
         [pscustomobject]@{ Valid = $false; Version = ''; Problems = @('package-directory-required') }
     }
     [pscustomobject]@{
-        Adapters = $adapters; RemoteSession = $remote; BridgeCommands = $bridgeCommands
-        ExistingBridge = ('ms_bridgemp' -in $adapters.ComponentId); Driver = $driver
+        Adapters = $adapters; RemoteSession = $remote; BridgeCommands = $bridgeCommands; Architecture = $architecture
+        ExistingBridge = (('ms_bridgemp' -in $adapters.ComponentId) -or $bridges -match '\{[0-9a-fA-F-]{36}\}'); Driver = $driver
     }
 }
 

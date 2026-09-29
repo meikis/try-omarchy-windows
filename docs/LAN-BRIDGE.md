@@ -47,7 +47,7 @@ scripts/network/bridge-preflight.ps1 -DriverDirectory C:\BridgeLab\dist.win10\am
 The result lists adapter GUIDs and blockers. Once a disposable wired host has
 local console access and an explicitly approved, dedicated TAP device, assess
 the selected pair with `-WiredGuid`, `-TapGuid`, `-DisposableLab`, `-LocalConsole`
-and `-DedicatedTap`. Remote SSH/RDP, nonphysical Ethernet, Wi-Fi, Bluetooth,
+and `-DedicatedTap`. Non-x64 hosts, remote SSH/RDP, nonphysical Ethernet, Wi-Fi, Bluetooth,
 missing/down adapters, missing DHCP/IPv4/default-route baseline, existing
 bridges, occupied TAP devices and Hyper-V/bridge bindings block the lab path.
 Unknown inventory or trust errors stop inspection rather than report success.

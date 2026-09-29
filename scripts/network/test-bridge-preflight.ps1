@@ -4,7 +4,7 @@ Import-Module (Join-Path $PSScriptRoot 'bridge-preflight.psm1') -Force
 $passed = 0
 function New-Fixture {
     [pscustomobject]@{
-        RemoteSession = $false; BridgeCommands = $true; ExistingBridge = $false
+        Architecture = 'AMD64'; RemoteSession = $false; BridgeCommands = $true; ExistingBridge = $false
         Driver = [pscustomobject]@{ Valid = $true; Version = '9.27.0'; Problems = @() }
         Adapters = @(
             [pscustomobject]@{Name='Ethernet';Guid='wired';Hardware=$true;Media='802.3';PhysicalMedia='802.3';Status='Up';Dhcp=$true;IPv4Ready=$true;DefaultRoute=$true;BridgeBound=$false;HyperVBound=$false;ComponentId='pci'},
@@ -24,6 +24,7 @@ $default = Get-BridgeLabAssessment (New-Fixture)
 foreach ($reason in 'disposable-lab-required','local-console-required','dedicated-tap-required','select-present-wired-adapter','select-present-tap-adapter') {
     if ($reason -notin $default.Blockers) { throw "Missing default blocker $reason" }; $passed++
 }
+$s=New-Fixture; $s.Architecture='ARM64'; Assert-Blocked $s 'x64-windows-required'
 $s=New-Fixture; $s.RemoteSession=$true; Assert-Blocked $s 'local-console-required'
 $s=New-Fixture; $s.Adapters[0].Media='Native 802.11'; Assert-Blocked $s 'wired-ethernet-required'
 $s=New-Fixture; $s.Adapters[0].PhysicalMedia='BlueTooth'; Assert-Blocked $s 'wired-ethernet-required'
