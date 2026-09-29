@@ -1,6 +1,8 @@
 # Windows and Mac feature review
 
-Reviewed September 21 and refreshed September 24, 2026 against Mac source commit
+Windows status refreshed September 29, 2026 for published `v0.6.2`.
+The Mac comparison was reviewed September 21 and refreshed September 24
+against source commit
 [`28f4722fab3e16ae26a7cb8fab2ab7908b1833e4`](https://github.com/omacom/try-omarchy/tree/28f4722fab3e16ae26a7cb8fab2ab7908b1833e4).
 This is an implementation and acceptance tracker, not a claim that every feature
 is shipped or hardware-tested. The release gates in
@@ -27,10 +29,9 @@ fixes. Equivalent behavior is tracked below only where it makes sense on Windows
 - The Mac pinch implementation is a dedicated virtual multitouch touchpad, not
   a Hyprland zoom shortcut. Windows parity needs equivalent event delivery,
   including cancellation on focus loss and VM state changes.
-- The pinned QEMU SDL and DirectSound options do not expose endpoint selection.
-  A hypothetical `-audiodev wasapi` switch is not an implemented backend in this
-  runtime. SDL itself uses Windows audio APIs; endpoint selection could extend
-  the existing SDL backend instead of requiring a wholesale backend replacement.
+- Live endpoint selection and switching ship through the extended SDL backend
+  in `runtime-v1-r20c` since `v0.3.0`. A hypothetical `-audiodev wasapi`
+  switch is not an implemented backend in this runtime.
 
 ## Current coverage
 
@@ -55,51 +56,35 @@ fixes. Equivalent behavior is tracked below only where it makes sense on Windows
 | Guest RAM reclamation | Shipped with r19 in `v0.2.0`; three physical touch/free cycles returned about 797 MiB after the third 768 MiB allocation | Follow up on concrete memory reports |
 | Keyboard and language | Windows time zone, keyboard layout and display language follow the host | Physical ANSI/ISO/JIS geometry and broader input-method acceptance |
 
-Windows Hello, true bridged networking, and embedded Windows app windows remain
-feature work. Live audio switching shipped in `v0.3.0` with r20c; public `v0.2.0`
-remains the previous r19 release. The [signed and public v0.3.0 acceptance
-record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md) and
-[publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/35978943238)
-record the release checks. Settings, battery mirroring, live memory reclamation,
-approved app launch, and fullscreen monitor selection shipped in `v0.2.0`. Pinch
-is on by default since `v0.4.0`; its physical gesture and scrolling checks
-passed on the laptop.
+Windows Hello sudo shipped in `v0.5.0`; 1Password unlock and direct application
+drops shipped in `v0.6.0`. Live audio switching shipped in `v0.3.0` and default
+pinch in `v0.4.0`. The current published release is `v0.6.2`. True LAN bridging
+and embedded Windows app windows remain implementation work. The acceptance
+limits in the table remain relevant for shipped features.
 
 ## Work sequence toward comparable everyday use
 
-1. **Continue live audio hardware acceptance (#167).** [PR #175](https://github.com/omacom/try-omarchy-windows/pull/175)
-   and the public `runtime-v1-r20c` ship live host Settings and guest PipeWire
-   switching in `v0.3.0`; selected routes persist across guest reboots. The
-   [public and physical acceptance record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md)
-   documents the available laptop checks. Two physical endpoints per direction
-   and hotplug remain to be tested on suitable hardware.
-2. **Add signed Windows Hello approval (#165).** Mirror the Mac's opt-in sudo
-   model: enroll only after the guest password, pair a per-guest public key,
-   sign a fresh request with Windows Hello, and verify it inside guest PAM.
-   Denial and unsupported hosts must fall back to password. After PIN setup,
-   the current laptop can test approval and denial in the eventual guest flow.
-   Shipped in `v0.5.0`. The Mac's separate, process-scoped 1Password unlock
-   ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)) followed
-   in `v0.6.0` without changing general guest PAM policy.
-3. **Offer a real LAN mode (#166).** Keep NAT and explicit forwards as the
-   default. Start with a signed TAP adapter and a reversible wired-Ethernet
-   bridge that has its own stable guest MAC. Verify host connectivity, guest
-   DHCP/LAN reachability, restart, adapter loss and cleanup on a disposable
-   wired setup. Only offer Wi-Fi bridging after an actual Wi-Fi proof.
-4. **Finish host-app and file workflows (#160, #174).** The approved-app launch
-   bridge already works. Window embedding needs capture, input, focus,
-   accessibility, scaling and lifecycle behavior, and can ship once it is
-   reliable in normal use. Direct drops shipped in `v0.6.0` through a guest
-   drag source under the pointer.
-5. **Polish input, language and graphics.** Use specific reports and available
-   machines to address keyboard geometry/IME, shipping automatic pinch, and
-   the Intel/NVIDIA Vulkan issue (#173).
-   Keep the existing CPU/OpenGL fallback.
+1. **Complete Modern Standby handling (#216).** `v0.6.1` disabled the guest
+   service watchdogs that restarted services during a controlled five-minute
+   launcher/QEMU freeze. The launcher notification change is separate. See
+   [Windows sleep handling](WINDOWS-SLEEP.md) for its behavior and physical
+   checks. Reporter confirmation and XWayland authorization remain open.
+2. **Offer a real LAN mode (#166).** Keep NAT and explicit forwards as the
+   default. Start with a maintained, signed TAP adapter and a reversible
+   wired-Ethernet bridge with a stable guest MAC. Verify host connectivity,
+   guest DHCP/LAN reachability, failed setup, restart, adapter loss and cleanup
+   on a disposable wired setup. Never change the remotely accessed Wi-Fi
+   laptop's bindings. Wi-Fi bridging needs separate proof.
+3. **Embed approved Windows app windows (#160).** Approved host-app launching
+   already ships. Capture, input, focus, scaling and window lifecycle remain
+   a separate milestone. Direct application drops already ship.
+4. **Continue hardware acceptance.** Live audio's two-endpoint and hotplug
+   checks, Firefox pinch, keyboard geometry/IME and the Intel/NVIDIA Vulkan
+   report (#173) need suitable hardware or specific reports. Keep CPU/OpenGL
+   fallback available.
 
-Public `v0.2.0` already covers the former battery, unused-RAM, fullscreen and
-in-guest Settings gaps. Broad hardware or Windows-version coverage is ongoing
-compatibility work. Each new path above needs proof of its own behavior before
-we call it complete; unrelated user hardware is not a release gate.
+Broad hardware or Windows-version coverage is ongoing compatibility work.
+Each new path needs proof of its own behavior before it is called complete.
 
 ## Local checks and next laptop pass
 
@@ -153,7 +138,9 @@ two-finger scrolling still worked. See
 `DeviceNotPresent`, both through OpenSSH and in an interactive scheduled task
 for the signed-in user. After Windows Hello PIN setup on September 23, the
 interactive task returned `Available`, and an initial approval prompt returned
-`Verified`. No guest PAM change has been made. The
+`Verified`. Those were preflight checks; opt-in guest sudo subsequently shipped
+in `v0.5.0` with a single PAM rule. The
 [availability API](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.ui.userconsentverifier.checkavailabilityasync)
 allows an implementation to retain password authentication on unsupported hosts;
-the laptop is now available for a key-backed guest approval and denial test.
+the [Hello laptop record](evidence/HELLO-SUDO-LAPTOP-2026-09-26.md)
+records the later key-backed guest approval, cancellation and fallback checks.

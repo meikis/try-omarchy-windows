@@ -88,7 +88,8 @@ below and use reports from this normal 0.x release to prioritize further work.
   original laptop installation and the clean test backup remain intact.
 - The [r18 touchpad record](evidence/PINCH-R18-PHYSICAL-2026-09-22.md) includes
   a physical two-finger pinch. Initiation improved, zoom returned to normal,
-  and scrolling still worked. The feature remains experimental and opt-in.
+  and scrolling still worked. That record predates `v0.4.0`, which made pinch
+  automatic for eligible guests.
 - The [runtime validation record](RUNTIME-VALIDATION.md) distinguishes the AMD
   pass from the earlier Intel/NVIDIA preview-runtime result. On that earlier
   configuration, OpenGL worked but Vulkan initialization failed. The Intel/
@@ -182,12 +183,15 @@ reproducible issues as they arrive; broader hardware coverage is not a gate.
 Feature parity is tracked in [MAC-PARITY.md](MAC-PARITY.md). `v0.3.0` ships
 live audio switching with r20c. The previous `v0.2.0` release shipped in-guest
 host Settings, battery mirroring, measured live RAM reclamation, the approved-app
-launch bridge, and fullscreen monitor choice. Keep Windows Hello sudo and true
-bridged networking as active feature work rather than dropping them for lack of
-bug reports. Their existing password and NAT paths remain usable while
-[Hello #165](https://github.com/omacom/try-omarchy-windows/issues/165) and
-[LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166)
-proceed. The current user base of thousands with relatively few reports is
+launch bridge, and fullscreen monitor choice. Windows Hello sudo shipped as an
+opt-in in `v0.5.0`. 1Password unlock and direct application drops shipped in
+`v0.6.0`. True bridged networking remains
+active feature work in [#166](https://github.com/omacom/try-omarchy-windows/issues/166).
+NAT and existing forwarding remain the default. Modern Standby's launcher
+notification handling is tracked separately from the shipped guest watchdog
+fix in [#216](https://github.com/omacom/try-omarchy-windows/issues/216); see
+[Windows sleep handling](WINDOWS-SLEEP.md) for the remaining checks.
+The current user base of thousands with relatively few reports is
 positive evidence about the everyday path; broad hardware and Windows 10
 acceptance are not 1.0 gates. Automatic pinch shipped in `v0.4.0`; its
 acceptance limits are in [PINCH-ZOOM.md](PINCH-ZOOM.md). ARM64 and interface translation are open requests
