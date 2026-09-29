@@ -81,8 +81,11 @@ external changes alone rather than restoring an obsolete baseline.
 
 Windows creates the explicitly selected pair. The helper obtains the actual
 bridge GUID from `netsh bridge list` and verifies exactly those members. Host
-DHCP, default route, DNS and bound TCP must pass before the journal becomes
-`Active`. This checks host connectivity, not guest LAN acceptance.
+DHCP, default route, DNS and bound TCP must pass. Read-only `pktmon list --json`
+must also show the NDIS bridge protocol attached to each exact member's miniport.
+An enabled `ms_implat` binding alone is insufficient. Missing, ambiguous or
+unavailable component inventory triggers scoped recovery before the journal can
+become `Active`. Protocol attachment is a prerequisite, not guest LAN acceptance.
 
 Disable or recover with the same safety declarations:
 
@@ -116,6 +119,14 @@ TAP/Ethernet bridge and retain host DHCP, DNS and bound TCP connectivity. A
 nested QEMU guest emits LAN DHCP requests, but those frames do not reach the
 isolated virtual Ethernet peer. Delaying guest startup does not produce a lease.
 The guest's separate private NAT NIC and host service remain reachable.
+
+Packet Monitor captures host DHCP through the Ethernet and bridge components,
+but shows no guest DHCP entering the Windows network stack. The TAP's enabled
+`ms_implat` binding has no attached NDIS bridge protocol, including while its
+media is connected. Native overlapped TAP writes succeed with the full frame
+length. Toggling that binding or removing and re-adding the connected TAP does
+not attach the protocol. The helper now rejects this state and restores the
+original host network. The underlying attachment failure remains unresolved.
 
 This result does not accept TAP-Windows6 plus the current Windows bridge path
 for guest LAN traffic. Establish bidirectional forwarding with packet captures

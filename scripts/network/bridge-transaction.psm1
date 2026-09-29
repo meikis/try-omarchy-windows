@@ -81,7 +81,7 @@ function Start-BridgeLabTransaction {
         if (-not $owned) { throw 'Bridge creation did not produce the selected pair.' }
         $journal.BridgeGuid = [string]$owned
         Set-BridgePhase $journal Verifying $JournalPath
-        if (-not (& $Backend.ProbeBridge $journal)) { throw 'Bridged host connectivity failed.' }
+        if (-not (& $Backend.ProbeBridge $journal)) { throw 'Bridge connectivity or protocol attachment failed.' }
         Set-BridgePhase $journal Active $JournalPath
         return $journal
     } catch {

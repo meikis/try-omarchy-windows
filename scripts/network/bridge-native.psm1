@@ -1,5 +1,6 @@
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'bridge-preflight.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'bridge-datapath.psm1') -Force
 
 function Get-SelectedAdapter {
     param([string]$Guid, [string]$Pnp = '')
@@ -161,6 +162,35 @@ function Test-WiredProbe {
     return $false
 }
 
+function Test-NativeBridgeDataPath {
+    param($Journal)
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = Join-Path ([Environment]::SystemDirectory) 'pktmon.exe'
+    $info.Arguments = 'list --json'
+    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new(); $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw 'Component inventory did not start.' }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(10000)) {
+            $process.Kill(); $process.WaitForExit()
+            throw 'Component inventory timed out.'
+        }
+        if ($process.ExitCode -ne 0) { throw 'Component inventory failed.' }
+        $assessment = Get-BridgeDataPathAssessment -Groups @($stdout.Result | ConvertFrom-Json) `
+            -AdapterGuids @($Journal.Before.Wired.Guid, $Journal.Before.Tap.Guid)
+        if (-not $assessment.Attached) {
+            Write-Warning ("Bridge data path is unavailable: " + ($assessment.Blockers -join ', '))
+        }
+        return $assessment.Attached
+    } catch {
+        Write-Warning 'Bridge component inventory is unavailable. Host connectivity alone cannot verify the data path.'
+        return $false
+    } finally { $process.Dispose() }
+}
+
 function Restore-AdapterBaseline {
     param($Baseline, [switch]$AllowAbsent)
     $present = @(Get-NetAdapter -IncludeHidden | Where-Object { ([string]$_.InterfaceGuid).Trim('{}') -eq $Baseline.Guid })
@@ -266,7 +296,11 @@ function New-NativeBridgeBackend {
             Invoke-BridgeCommand @('create', "{$($j.Before.Wired.Guid)}", "{$($j.Before.Tap.Guid)}")
         }
         FindOwned = { param($j) Find-OwnedBridge $j }
-        ProbeBridge = { param($j) Test-WiredProbe $j.BridgeGuid $j.Request }
+        ProbeBridge = {
+            param($j)
+            if (-not (Test-WiredProbe $j.BridgeGuid $j.Request)) { return $false }
+            Test-NativeBridgeDataPath $j
+        }
         Destroy = {
             param($j)
             if ((Find-OwnedBridge $j) -ne $j.BridgeGuid) { throw 'Owned bridge changed before removal.' }
