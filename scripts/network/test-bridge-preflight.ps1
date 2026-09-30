@@ -73,3 +73,9 @@ try {
     if ($bad.Valid -or @($bad.Problems | Where-Object { $_ -like 'hash:*' }).Count -ne 4) { throw 'Substituted package accepted' };$passed++
 } finally { Remove-Item -LiteralPath $temp -Recurse -Force }
 Write-Output "$passed bridge preflight checks passed"
+
+foreach ($case in @(@('192.0.2.26',24,$false),@('10.0.1.2',24,$false),@('10.0.3.2',24,$false),@('10.0.2.80',24,$true),@('10.99.1.2',8,$true),@('192.0.2.26',0,$true),@('10.0.2.2',32,$true),@('10.0.2.255',32,$true),@('10.0.3.0',32,$false))) {
+    $overlap=Test-BridgePrivateSubnetConflict @([pscustomobject]@{IPAddress=$case[0];PrefixLength=$case[1]})
+    if ($overlap -ne $case[2]) { throw 'Private service subnet overlap missed.' }
+}
+Write-Host '9 private subnet checks passed'

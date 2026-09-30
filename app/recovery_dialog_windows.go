@@ -44,7 +44,13 @@ func chooseExecutablePath(owner uintptr) (string, bool, error) {
 	return chooseWindowsPath(owner, "Choose a Windows app to make available in Omarchy", "", false, false, true)
 }
 
+func chooseBridgePlanPath(owner uintptr) (string, bool, error) {
+	return chooseWindowsPathFiltered(owner, "Choose an explicit disposable bridge lab plan", "", false, false, false, true)
+}
 func chooseWindowsPath(owner uintptr, title, filename string, save, folder, executable bool) (string, bool, error) {
+	return chooseWindowsPathFiltered(owner, title, filename, save, folder, executable, false)
+}
+func chooseWindowsPathFiltered(owner uintptr, title, filename string, save, folder, executable, bridge bool) (string, bool, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	init, _, _ := ole32.NewProc("CoInitializeEx").Call(0, 2)
@@ -98,6 +104,9 @@ func chooseWindowsPath(owner uintptr, title, filename string, save, folder, exec
 		filterLabel, filterPattern, extension := "Omarchy backups (*.zip)", "*.zip", "zip"
 		if executable {
 			filterLabel, filterPattern, extension = "Windows apps (*.exe)", "*.exe", "exe"
+		}
+		if bridge {
+			filterLabel, filterPattern, extension = "Bridge lab plans (*.json)", "*.json", "json"
 		}
 		label, _ := syscall.UTF16PtrFromString(filterLabel)
 		pattern, _ := syscall.UTF16PtrFromString(filterPattern)

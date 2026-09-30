@@ -37,5 +37,16 @@ try {
  Reset;$savedPrepare=$backend.Prepare;$backend.Prepare={param($j) $state.Events.Add('uncertain');throw [TimeoutException]::new('reply lost')}
  Throws {Start-LauncherBridge $backend $path @{}};Assert ((Phase) -eq 'RecoveryRequired') 'uncertain command not pending';Assert ('restore' -notin $state.Events) 'undo raced an uncertain command'
  $backend.Prepare=$savedPrepare;Restore-LauncherBridge $backend $path|Out-Null;Assert ((Phase) -eq 'Complete') 'explicit uncertain recovery failed'
+ Reset;Assert ($null -eq (Get-LauncherBridgeRecovery $backend $path @{})) 'missing journal cannot return to NAT'
+ $request=@{tapGuid='tap';tapPnp='owned';wiredGuid='wired';wiredPnp='wired-pnp'}
+ Start-LauncherBridge $backend $path $request|Out-Null
+ $wrong=@{tapGuid='tap';tapPnp='replacement';wiredGuid='wired';wiredPnp='wired-pnp'}
+ Throws {Get-LauncherBridgeRecovery $backend $path $wrong};Assert ((Phase) -eq 'Ready') 'recovery selection changed pending journal'
+ $before=$state.Events.Count;$j=Get-LauncherBridgeRecovery $backend $path $request
+ Assert ($j.Phase -eq 'Ready' -and $state.Events.Count -eq $before) 'recovery preflight mutated'
+ Restore-LauncherBridge $backend $path|Out-Null
+ Assert ((Get-LauncherBridgeRecovery $backend $path $wrong).Phase -eq 'Complete') 'completed journal required missing adapter'
+ $j=Get-Content $path -Raw|ConvertFrom-Json;$j.Before.MachineGuid='foreign';$j|ConvertTo-Json -Depth 10|Set-Content $path
+ Throws {Get-LauncherBridgeRecovery $backend $path $request}
  Write-Host "$count launcher bridge transaction checks passed"
 } finally {Remove-Item $dir -Recurse -Force}

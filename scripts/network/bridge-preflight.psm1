@@ -20,6 +20,25 @@ function Get-BridgeGuidsFromListing {
     $guids
 }
 
+function Test-BridgePrivateSubnetConflict {
+    param($Addresses)
+    # Use subnet ranges, not a 10.0.2 string prefix. A /8 also overlaps.
+    $privateStart=[uint64]167772672
+    $privateEnd=$privateStart+255
+    foreach ($entry in $Addresses) {
+        $ip=[Net.IPAddress]::Parse([string]$entry.IPAddress)
+        if ($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { continue }
+        $prefix=[int]$entry.PrefixLength
+        if ($prefix -lt 0 -or $prefix -gt 32) { throw 'Invalid wired prefix.' }
+        $b=$ip.GetAddressBytes()
+        $number=([uint64]$b[0] -shl 24)+([uint64]$b[1] -shl 16)+([uint64]$b[2] -shl 8)+[uint64]$b[3]
+        $size=[uint64]1 -shl (32-$prefix)
+        $start=$number-($number % $size)
+        if ($start -le $privateEnd -and ($start+$size-1) -ge $privateStart) { return $true }
+    }
+    return $false
+}
+
 function Test-BridgeBinding {
     param([string[]]$EnabledComponents)
     # Current Windows members use the multiplexor protocol; ms_bridge is on
@@ -149,4 +168,4 @@ function Get-BridgeHostSnapshot {
     }
 }
 
-Export-ModuleMember -Function Test-BridgeDriverPackage, Get-BridgeLabAssessment, Get-BridgeHostSnapshot, Get-BridgeGuidsFromListing, Test-BridgeBinding
+Export-ModuleMember -Function Test-BridgePrivateSubnetConflict, Test-BridgeDriverPackage, Get-BridgeLabAssessment, Get-BridgeHostSnapshot, Get-BridgeGuidsFromListing, Test-BridgeBinding

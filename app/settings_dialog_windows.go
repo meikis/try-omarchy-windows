@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -71,6 +72,9 @@ const (
 	settingsAppRemoveID          = 2124
 	settingsAppListID            = 2125
 	settingsAltTabID             = 2126
+	settingsBridgeOnID           = 2127
+	settingsBridgePlanID         = 2128
+	settingsBridgeRecoverID      = 2129
 	settingsSaveID               = 2001
 	settingsCancelID             = 2002
 	settingsBrowseID             = 2003
@@ -162,6 +166,12 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		errorBox("Cannot read launch preferences:\n\n" + err.Error())
 		return false
 	}
+	networkPrefs, err := loadNetworkPreferences(dataDir)
+	if err != nil {
+		errorBox("Cannot read network preferences:\n\n" + err.Error())
+		return false
+	}
+	originalNetwork := networkPrefs
 	keyboardPrefs, err := loadKeyboardPreferences(dataDir)
 	if err != nil {
 		errorBox("Cannot read keyboard preferences:\n\n" + err.Error())
@@ -251,6 +261,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	var hAudioOutput, hAudioInput uintptr
 	var hResourceProfile, hResourceHelp uintptr
 	var hApprovedApps uintptr
+	var hBridgeOn, hBridgePlan uintptr
 	var updateResourceControls func()
 	var refreshApprovedApps func()
 	profileValues := []string{resourceBalanced, resourceMaximum, resourceManual}
@@ -261,6 +272,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		return profileValues[index]
 	}
+	var pendingRecovery string
 	var selectPage func(int)
 	var pages [5][]settingsScrollControl
 	var pageHeights [5]int32
@@ -349,6 +361,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			return
 		}
 		procAllowSetForeground.Call(uintptr(cmd.Process.Pid))
+		pendingRecovery = action
 		procEnableWindow.Call(hwnd, 0)
 		go func() { _ = cmd.Wait(); procPostMessageW.Call(hwnd, settingsRecoveryDone, 0, 0) }()
 	}
@@ -366,6 +379,25 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				return 0
 			}
 			switch wParam & 0xffff {
+			case settingsBridgePlanID:
+				if originalNetwork.Mode == "bridge-lab" {
+					errorBox("Use Recover TAP / use NAT before changing adapter selection.")
+					return 0
+				}
+				selected, ok, err := chooseBridgePlanPath(hwnd)
+				if err == nil && ok {
+					var plan *bridgePlan
+					plan, err = loadBridgePlan(selected)
+					if err == nil {
+						networkPrefs = importNetworkPlan(networkPrefs, *plan)
+						setText(hBridgePlan, "Plan selected. Existing guest MACs are retained.")
+					}
+				}
+				if err != nil {
+					errorBox("Cannot use bridge plan:\n\n" + err.Error())
+				}
+			case settingsBridgeRecoverID:
+				launchRecovery("bridge-nat")
 			case settingsAppAddID:
 				path, ok, err := chooseExecutablePath(hwnd)
 				if err != nil {
@@ -422,6 +454,21 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					}
 				}
 				s, err := collect()
+				updatedNetwork := networkPrefs
+				bridgeCheck, _, _ := procSendMessageW.Call(hBridgeOn, bmGetcheck, 0, 0)
+				updatedNetwork.Mode = "nat"
+				if bridgeCheck == bstChecked {
+					updatedNetwork.Mode = "bridge-lab"
+				}
+				if err == nil {
+					err = updatedNetwork.validate()
+				}
+				if err == nil && updatedNetwork.Mode == "bridge-lab" {
+					err = requireDualNICGuest(filepath.Join(dataDir, "guest"))
+				}
+				if err == nil && originalNetwork.Mode == "bridge-lab" && updatedNetwork.Mode == "nat" {
+					err = fmt.Errorf("use Recover TAP / use NAT before disabling the bridge")
+				}
 				diskGiB := storage.DiskGiB
 				if err == nil {
 					diskGiB, err = parseDiskGiB(text(hDisk))
@@ -554,6 +601,12 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 						return 0
 					}
 				}
+				if !reflect.DeepEqual(updatedNetwork, originalNetwork) {
+					if err := saveNetworkPreferences(dataDir, updatedNetwork); err != nil {
+						errorBox("Other settings were saved, but networking could not be saved:\n\n" + err.Error())
+						return 0
+					}
+				}
 				saved = true
 				procDestroyWindow.Call(h)
 			case settingsCancelID, idCancel:
@@ -605,6 +658,25 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			}
 			return 0
 		case settingsRecoveryDone:
+			if pendingRecovery == "bridge-nat" {
+				if updated, err := loadNetworkPreferences(dataDir); err == nil {
+					networkPrefs = updated
+					originalNetwork = updated
+					checked := uintptr(0)
+					if updated.Mode == "bridge-lab" {
+						checked = bstChecked
+					}
+					procSendMessageW.Call(hBridgeOn, bmSetcheck, checked, 0)
+					label := "NAT is the default. Choose a lab plan to opt in."
+					if updated.Bridge != nil {
+						label = "Saved lab plan. Guest DHCP identities are retained."
+					}
+					setText(hBridgePlan, label)
+				} else {
+					errorBox("Cannot reread network preferences after recovery: " + err.Error())
+				}
+			}
+			pendingRecovery = ""
 			if !portable {
 				if resolved, err := prepareMovedLocation(dataDir, false); err == nil && !pathsEqual(resolved, dataDir) {
 					if beforeRelaunch != nil {
@@ -943,6 +1015,29 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procSendMessageW.Call(hLANPublic, bmSetcheck, bstChecked, 0)
 	}
 	y += 32
+	hBridgeOn = mk("BUTTON", "Wired LAN bridge (disposable lab only)", left, y, 450, 24, bsAutocheckbox|wsTabstop, settingsBridgeOnID)
+	if networkPrefs.Mode == "bridge-lab" {
+		procSendMessageW.Call(hBridgeOn, bmSetcheck, bstChecked, 0)
+	}
+	if portable {
+		procEnableWindow.Call(hBridgeOn, 0)
+	}
+	y += 30
+	label := "NAT is the default. Choose a lab plan to opt in."
+	if networkPrefs.Bridge != nil {
+		label = "Saved lab plan. Guest DHCP identities are retained."
+	}
+	hBridgePlan = mk("STATIC", label, left, y, clientW-2*left, 36, ssNoprefix, 0)
+	y += 40
+	planButton := mk("BUTTON", "Choose lab plan...", left, y, 180, 28, wsTabstop, settingsBridgePlanID)
+	recoverButton := mk("BUTTON", "Recover TAP / use NAT", left+190, y, 260, 28, wsTabstop, settingsBridgeRecoverID)
+	if portable {
+		procEnableWindow.Call(planButton, 0)
+		procEnableWindow.Call(recoverButton, 0)
+	}
+	y += 34
+	mk("STATIC", "Requires a compatible guest, manually installed signed TAP and Npcap, wired Ethernet and an independent local console. Direct LAN services follow the guest firewall. No drivers are installed here.", left, y, clientW-2*left, 66, ssNoprefix, 0)
+	y += 74
 	mk("STATIC", "SSH public key file\n(blank: your ~/.ssh/id_*.pub)", left, y+3, labelW, 40, ssNoprefix, 0)
 	hKey = mk("EDIT", current.SSHKey, fieldX, y, fieldW, 24, wsBorder|wsTabstop|esAutohscroll, settingsKeyID)
 	// The two-line key label above is 40 px tall from y+3; start the next

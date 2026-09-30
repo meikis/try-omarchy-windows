@@ -10,9 +10,10 @@ var (
 // buildSpec holds the fields the launcher reads from the guest's build-spec.json.
 type buildSpec struct {
 	Runtime struct {
-		KernelCommandLine string   `json:"kernelCommandLine"`
-		OptionalDevices   []string `json:"optionalDevices"`
-		Storage           struct {
+		KernelCommandLine   string   `json:"kernelCommandLine"`
+		OptionalDevices     []string `json:"optionalDevices"`
+		NetworkCapabilities []string `json:"networkCapabilities"`
+		Storage             struct {
 			ExpandedSizeMiB int64 `json:"expandedSizeMiB"`
 		} `json:"storage"`
 	} `json:"runtime"`

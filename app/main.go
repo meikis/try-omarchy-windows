@@ -232,7 +232,7 @@ func main() {
 		*recoveryAction = "uninstall"
 	}
 	maintenance := *backupPath != "" || *restorePath != "" || *recoveryAction != ""
-	if *recoveryAction != "" && (*recoveryAction != "backup" && *recoveryAction != "restore" && *recoveryAction != "reset" && *recoveryAction != "uninstall" && *recoveryAction != "move" && *recoveryAction != "move-cleanup" && *recoveryAction != "snapshots" && *recoveryAction != "portable-create" || *backupPath != "" || *restorePath != "") {
+	if *recoveryAction != "" && (*recoveryAction != "backup" && *recoveryAction != "restore" && *recoveryAction != "reset" && *recoveryAction != "uninstall" && *recoveryAction != "move" && *recoveryAction != "move-cleanup" && *recoveryAction != "snapshots" && *recoveryAction != "portable-create" && *recoveryAction != "bridge-nat" || *backupPath != "" || *restorePath != "") {
 		fatal("Choose one recovery action: backup, restore, snapshots, portable-create, reset, move, or uninstall.")
 	}
 	if maintenance && (*backupPath != "" && *restorePath != "" || cfg.portable && !portableRecoveryAllowed(*recoveryAction, *backupPath, *restorePath) || cfg.fresh || *openSettings || *diagnostics || *enableWhp || *applyLauncherUpdateFlag || *applyLauncherRollbackFlag) {
@@ -745,6 +745,21 @@ func main() {
 	if err := json.Unmarshal(specData, &spec); err != nil {
 		fatal("Cannot parse build-spec.json: %v", err)
 	}
+	if cfg.bridge == nil {
+		network, err := loadNetworkPreferences(cfg.dir)
+		if err != nil {
+			fatal("Cannot read network preferences: %v", err)
+		}
+		if network.Mode == "bridge-lab" {
+			if cfg.portable {
+				fatal("Bridge lab preferences cannot be used in a portable installation.")
+			}
+			if !guestAcceptsDualNIC(spec) {
+				fatal("The selected guest image does not support automatic dual-NIC routing. Install a compatible candidate or use Recover TAP / use NAT in Settings.")
+			}
+			cfg.bridge = network.Bridge
+		}
+	}
 	cfg.guestPinch = guestAcceptsPinch(spec)
 	// Serial log only - no console= on the display, so no kernel text or
 	// blinking cursor flashes in the window before SDDM (boot problems: read
@@ -757,6 +772,9 @@ func main() {
 	}
 	cmdline += sshCmdline(cfg.forwards, cfg.sshKey)
 	cmdline += shareCmdline(cfg.share)
+	if cfg.bridge != nil && guestAcceptsDualNIC(spec) {
+		cmdline += bridgeGuestCmdline(cfg.bridge)
+	}
 	zone, layout, variant, locale := hostLocale(*timeZoneFlag, *keyboardFlag, *localeFlag)
 	if words := hostLocaleCmdline(zone, layout, variant, locale); words != "" {
 		cmdline += words
@@ -883,14 +901,17 @@ func supervise(cfg *config, cmdline string) bool {
 	var proc *exec.Cmd
 	var qmp *qmpConn
 	var bridge *bridgeSession
-	stopBridge := func() {
+	stopBridge := func() error {
+		var cleanupErr error
 		if bridge != nil {
-			if err := bridge.Close(); err != nil {
+			cleanupErr = bridge.Close()
+			if err := cleanupErr; err != nil {
 				logf("bridge cleanup: %v", err)
 			}
 			bridge = nil
 		}
 		cfg.bridgeFailure = nil
+		return cleanupErr
 	}
 	defer stopBridge()
 	// The worst case can consume one attempt each for nested virtualization,
@@ -909,6 +930,7 @@ func supervise(cfg *config, cmdline string) bool {
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
 		guestReady.Store(false)
+		guestNetworkFailed.Store(false)
 		controlDir, err := prepareQMPControl()
 		if err != nil {
 			fatal("Cannot prepare private VM controls: %v", err)
@@ -994,6 +1016,13 @@ func supervise(cfg *config, cmdline string) bool {
 		startupDead := false
 	probe:
 		for qmp == nil && time.Now().Before(deadline) {
+			if cfg.bridge != nil && guestNetworkFailed.Load() {
+				proc.Process.Kill()
+				<-exited
+				qemuPid.Store(0)
+				stopBridge()
+				fatal("The guest could not establish separate LAN and private routes. TAP recovery was attempted. Inspect the launcher log before relaunching.")
+			}
 			select {
 			case err := <-cfg.bridgeFailure:
 				proc.Process.Kill()
@@ -1086,7 +1115,7 @@ func supervise(cfg *config, cmdline string) bool {
 			// update components rollback-capable until the in-guest readiness
 			// service reaches userspace and networking.
 			defer qmp.close()
-			return watch(cfg, qmp, exited)
+			return watch(cfg, qmp, exited, stopBridge)
 		}
 		qemuPid.Store(0)
 		if !startupDead {
@@ -1105,7 +1134,23 @@ func supervise(cfg *config, cmdline string) bool {
 	return false
 }
 
-func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
+// Recovery must finish before displaying a modal error or offering NAT.
+var bridgeFailureNotice = errorBox
+
+func stopFailedBridge(cfg *config, exited <-chan error, cleanup func() error, message string) {
+	if cfg.bridgeQemu != nil {
+		cfg.bridgeQemu.Kill()
+	}
+	waitExit(exited, 15*time.Second, cfg)
+	if err := cleanup(); err != nil {
+		message += "\n\nTAP recovery is still pending: " + err.Error() + ". Use the independent local console before relaunching."
+	} else {
+		message += "\n\nThe lab VM was stopped and TAP recovery completed. Check the launcher log before relaunching."
+	}
+	bridgeFailureNotice(message)
+}
+
+func watch(cfg *config, qmp *qmpConn, exited <-chan error, stopBridge func() error) bool {
 	logf("supervisor: watching guest lifecycle and file drops")
 	lines := qmp.readLines()
 	reason := ""
@@ -1115,8 +1160,15 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 	defer ticker.Stop()
 	procDown := false
 	movedBootPending := false
+	bridgeReady := cfg.bridge == nil
+	var bridgeBoot bridgeBootBudget
 	for reason == "" && !procDown {
+		if cfg.bridge != nil && (guestNetworkFailed.Load() || (!bridgeReady && !guestReady.Load() && bridgeBoot.expired())) {
+			stopFailedBridge(cfg, exited, stopBridge, "The guest could not establish separate LAN and private routes.")
+			return false
+		}
 		if guestReady.Swap(false) {
+			bridgeReady = true
 			commitLauncherUpdate(cfg.dir)
 			commitPayloadUpdates(cfg.dir)
 			commitCheckpointBoot(cfg.dir)
@@ -1128,12 +1180,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 		}
 		select {
 		case err := <-cfg.bridgeFailure:
-			logf("Bridge forwarding stopped: %v", err)
-			if cfg.bridgeQemu != nil {
-				cfg.bridgeQemu.Kill()
-			}
-			waitExit(exited, 15*time.Second, cfg)
-			errorBox(fmt.Sprintf("Bridge forwarding stopped: %v\n\nThe lab VM was stopped. Recover from the independent console before relaunching.", err))
+			stopFailedBridge(cfg, exited, stopBridge, fmt.Sprintf("Bridge forwarding stopped: %v", err))
 			return false
 		case <-exited:
 			procDown = true
@@ -1144,6 +1191,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 				break
 			}
 			silent = 0
+			bridgeBoot.observe(line)
 			if paths, point, ok := droppedFilesEvent(line); ok {
 				logf("file drop: received %d item(s)", len(paths))
 				if err := sendDroppedFilesAt(paths, guestDropPoint(point), cursorPosition()); err != nil {
@@ -1155,6 +1203,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			}
 		case <-ticker.C:
 			tick++
+			bridgeBoot.tick()
 			if tick%5 == 0 {
 				if err := qmp.writeLine(`{"execute":"query-status"}`); err != nil {
 					procDown = waitExit(exited, 15*time.Second, cfg)
@@ -1214,8 +1263,9 @@ drained:
 }
 
 var (
-	pendingReboot atomic.Bool
-	guestReady    atomic.Bool
+	pendingReboot      atomic.Bool
+	guestReady         atomic.Bool
+	guestNetworkFailed atomic.Bool
 )
 
 // runLifecycleListener receives the guest's shutdown intent: the image's
@@ -1244,6 +1294,10 @@ func runLifecycleListener() {
 				case "reboot":
 					logf("guest announced reboot")
 					pendingReboot.Store(true)
+				case "bridge-failed":
+					guestNetworkFailed.Store(true)
+					guestReady.Store(false)
+					logf("guest dual-NIC readiness failed")
 				case "ready":
 					logf("guest userspace announced ready")
 					guestReady.Store(true)
@@ -1269,7 +1323,9 @@ func waitExit(exited <-chan error, grace time.Duration, cfg *config) bool {
 		return true
 	case <-time.After(grace):
 		logf("QEMU wedged after guest shutdown (stock WHPX trap) - cleaning up")
-		if pid := qemuPid.Load(); pid != 0 {
+		if cfg.bridgeQemu != nil {
+			cfg.bridgeQemu.Kill()
+		} else if pid := qemuPid.Load(); pid != 0 {
 			if p, err := os.FindProcess(int(pid)); err == nil {
 				p.Kill()
 			}

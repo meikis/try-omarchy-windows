@@ -3,7 +3,8 @@
 [#166](https://github.com/omacom/try-omarchy-windows/issues/166) remains feature
 work. NAT and existing port forwarding are the launcher default. The helpers
 in `scripts/network` prepare and recover a bridge in a disposable Windows lab;
-they do not add a launcher network preference or automatically install drivers.
+an experimental Settings preference imports an explicit lab plan. Drivers are
+installed separately by an administrator, never automatically.
 `BridgeAccepted` remains false, including after successful host probes.
 
 ## Signed adapter path
@@ -246,23 +247,44 @@ Hardware-specific offload behavior, fragmented host traffic, IPv6 routing/fragme
 headers, throughput, VLAN wire behavior, sleep and broader adapter/version
 coverage remain unaccepted. Unsupported captured host packets stop the helper
 rather than changing the NIC's offload configuration. Physical wired Ethernet,
-Secure Boot/HVCI, Windows 10, administrator cancellation and normal guest
+Secure Boot/HVCI, Windows 10, physical administrator interaction and complete Windows guest-image
 integration still need validation. `BridgeAccepted` remains false. NAT and
 existing forwarding remain the launcher defaults.
 
-## Normal guest and Settings work
+## Guest routing and Settings
 
-Keep the LAN NIC separate from a private NAT service NIC. Existing guest
-integrations use `10.0.2.2`. Guest route configuration must prefer LAN for normal
-traffic while preserving the private service route, saved port forwards,
-clipboard, clock, Hello, files and approved app launching. Do not expose launcher
-services on LAN to make bridging work. Persist distinct guest MACs per
-installation and verify them across relaunch.
+A compatible candidate declares `runtime.networkCapabilities: ["dual-nic-v1"]`.
+On bridge boots, the launcher passes the two installation-local MACs to the guest.
+Before NetworkManager starts, the guest generates mode-600 profiles in
+`/run/NetworkManager/system-connections`, matched by those MACs. LAN supplies DHCP,
+the default route and DNS. The private NIC keeps its connected `10.0.2.0/24`
+route, rejects DHCP default routes and DNS, and disables private IPv6.
+Saved guest profiles are preserved. A NAT boot removes only these owned runtime
+profiles. Compatibility revision 43 delivers the helper and unit drop-in to
+persistent disks without changing their saved network profiles.
 
-The normal setting also needs visible administrator cancellation, driver setup,
-owned-device cleanup and adapter-loss handling. Never silently rebind to Wi-Fi,
-a different Ethernet adapter or another TAP. Failed enable must preserve the
-saved NAT/forwarding configuration and verify host recovery before offering NAT.
+Guest readiness requires both active profiles, LAN IPv4/default route/DNS,
+a private route to `10.0.2.2`, and no overlapping LAN subnet. The Windows
+preflight also rejects overlapping wired subnets before TAP changes. Failed
+readiness stops the owned VM and completes TAP recovery before showing an error.
+If the private channel cannot report failure, the supervisor stops an unready
+bridge after 300 ticks with a QMP-confirmed running VM. Manual pause and host
+sleep do not consume that startup budget or trigger a resume. Image updates are committed only after guest readiness.
+
+In **Settings > Advanced**, choose an explicit lab plan and select **Wired LAN
+bridge (disposable lab only)**. Saving does not install a driver or change
+bindings. Starting the VM requests broker elevation and runs the normal preflight.
+Images without the declared capability cannot enable this preference.
+**Recover TAP / use NAT** completes recovery before saving NAT; cancellation or
+failed recovery retains the prior mode. Recover first before changing adapter
+selection. A completed journal remains recoverable after its owned TAP is gone.
+
+`network-preferences.json` retains the MACs and exact adapter identities across
+relaunches and same-installation moves. Guest backups and portable copies omit
+this host-bound file, so they default to NAT. Existing private integrations and
+port forwards stay on the private NIC. Direct LAN exposure follows the guest
+firewall. Normal Windows guest image integration and physical wired acceptance
+remain separate checks; this option is still restricted to disposable labs.
 
 ## Acceptance gates
 
@@ -279,7 +301,7 @@ saved NAT/forwarding configuration and verify host recovery before offering NAT.
 ## Experimental launcher ownership
 
 The launcher can now own the Npcap helper in an explicitly declared disposable
-Windows lab. This is a development option, not a supported network preference.
+Windows lab. The CLI and Settings options remain restricted to disposable labs.
 It requires the separately installed, pinned TAP and Npcap dependencies, an
 unused dedicated TAP, wired DHCP and an independent local recovery console.
 Driver installation remains manual. Npcap binaries are not bundled.
@@ -289,7 +311,7 @@ Save an installation-local JSON plan with `version: 1`, the exact `wiredGuid`,
 `privateMac`, `driverDirectory`, `probeName`, `probeAddress` and `probePort`.
 Retain the MACs and plan across boots. Set `disposableLab`, `localConsole`,
 `dedicatedTap` and `guestNetworkPrepared` only after satisfying those conditions.
-The guest must already configure both NICs by MAC: LAN DHCP provides the default
+Older fixture images must already configure both NICs by MAC: LAN DHCP provides the default
 route and DNS; the private NIC keeps its connected `10.0.2.0/24` route without a
 private default route or private DNS. Ordinary released guests have not been
 accepted with this routing configuration.

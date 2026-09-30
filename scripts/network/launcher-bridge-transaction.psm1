@@ -8,6 +8,17 @@ function Read-LauncherBridgeJournal($Path) {
     if ($j.Version -ne 1 -or $j.Kind -ne 'NpcapLauncher' -or $j.Phase -notin @('Preparing','Ready','Running','Restoring','RecoveryRequired','Complete')) { throw 'Unrecognized launcher bridge journal.' }
     $j
 }
+function Get-LauncherBridgeRecovery($Backend,$Path,$Request) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $j=Read-LauncherBridgeJournal $Path
+    & $Backend.ValidateMachine $j
+    if ($j.Phase -ne 'Complete') {
+        foreach ($field in 'tapGuid','tapPnp','wiredGuid','wiredPnp') {
+            if ($j.Request.$field -ne $Request.$field) { throw 'Use the exact saved plan for recovery.' }
+        }
+    }
+    return $j
+}
 function Restore-LauncherBridge($Backend,$Path) {
     $j = Read-LauncherBridgeJournal $Path
     & $Backend.ValidateMachine $j
@@ -61,4 +72,4 @@ function Set-LauncherBridgeRunning($Path) {
     if ($j.Phase -ne 'Ready') { throw 'Bridge is not prepared.' }
     $j.Phase='Running';Write-LauncherBridgeJournal $Path $j
 }
-Export-ModuleMember -Function Start-LauncherBridge, Restore-LauncherBridge, Set-LauncherBridgeRunning
+Export-ModuleMember -Function Get-LauncherBridgeRecovery, Start-LauncherBridge, Restore-LauncherBridge, Set-LauncherBridgeRunning

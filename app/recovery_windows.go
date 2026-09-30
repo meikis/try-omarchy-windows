@@ -36,6 +36,22 @@ func beginRecoveryProgress(status string) {
 func runRecoveryUI(dir, action string) error {
 	configureSetupCancellation(false)
 	switch action {
+	case "bridge-nat":
+		prefs, err := loadNetworkPreferences(dir)
+		if err != nil {
+			return err
+		}
+		if prefs.Bridge != nil {
+			broker, err := startBridgeBroker(prefs.Bridge, "Recover")
+			if err != nil {
+				return err
+			}
+			if err = broker.Close(); err != nil {
+				return err
+			}
+		}
+		prefs.Mode = "nat"
+		return saveNetworkPreferences(dir, prefs)
 	case "portable-create":
 		parent, ok, err := chooseRecoveryPath(0, "Choose where to create the portable copy", "", false, true)
 		if err != nil || !ok {

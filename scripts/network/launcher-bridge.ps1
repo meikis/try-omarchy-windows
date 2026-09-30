@@ -37,6 +37,7 @@ function Assert-Selection($r,[switch]$Opened) {
     $wired=Get-Exact $r.wiredGuid $r.wiredPnp; $tap=Get-Exact $r.tapGuid $r.tapPnp
     & $native { param($a) Assert-InstalledTapDriver $a } $tap
     Assert-Npcap
+    if (Test-BridgePrivateSubnetConflict @(Get-NetIPAddress -InterfaceIndex $wired.ifIndex -AddressFamily IPv4)) { throw 'Wired LAN overlaps the private 10.0.2.0/24 service network.' }
     if (([string]$wired.MacAddress).Replace('-',':') -ieq $r.lanMac -or ([string]$wired.MacAddress).Replace('-',':') -ieq $r.privateMac) { throw 'Guest and host MACs must differ.' }
     if (@(Get-NetIPAddress -AddressFamily IPv4 | Where-Object IPAddress -eq $r.probeAddress).Count) { throw 'The wired probe must be a separate peer, not this Windows host.' }
     $other=@(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and ([guid]$_.InterfaceGuid) -notin @([guid]$r.wiredGuid,[guid]$r.tapGuid) })
@@ -98,14 +99,13 @@ try {
     $held=[IO.File]::Open((Join-Path $Directory 'operation.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     if ($Request.Action -notin @('Start','Recover')) { throw 'Unknown broker action.' }
     if ($Request.Action -eq 'Recover') {
-        $previous=Get-Content -LiteralPath $journal -Raw|ConvertFrom-Json
-        foreach ($field in 'tapGuid','tapPnp','wiredGuid','wiredPnp') { if ($previous.Request.$field -ne $p.$field) { throw 'Use the exact saved plan for recovery.' } }
+        $previous=Get-LauncherBridgeRecovery $backend $journal $p
     }
     $created=$false
     $mutex=[Threading.Mutex]::new($false,('Global\TryOmarchyNpcapLab-'+([guid]$p.tapGuid).ToString()),[ref]$created)
     try { $mutexHeld=$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $mutexHeld=$true }
     if (-not $mutexHeld) { throw 'Another frame pump owns this TAP.' }
-    if ($Request.Action -eq 'Recover') { Restore-LauncherBridge $backend $journal | Out-Null; [Console]::WriteLine('{"state":"complete"}');return }
+    if ($Request.Action -eq 'Recover') { if ($null -ne $previous) { Restore-LauncherBridge $backend $journal | Out-Null }; [Console]::WriteLine('{"state":"complete"}');return }
     $nativeJournal=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'TryOmarchyBridgeLab\operation.json'
     if ((Test-Path -LiteralPath $nativeJournal) -and (Get-Content -LiteralPath $nativeJournal -Raw|ConvertFrom-Json).Phase -ne 'Complete') { throw 'Recover the native Windows bridge journal first.' }
     $active=Start-LauncherBridge $backend $journal $p;$prepared=$true

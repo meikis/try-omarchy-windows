@@ -1,0 +1,362 @@
+From 4159f6d37d4e531ff6f77a5bf4f0b3b20b0f6edc Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Tue, 29 Sep 2026 23:56:06 -0400
+Subject: [PATCH] Configure boot-only MAC-bound LAN and private guest networks
+
+---
+ .../try-omarchy-network.conf                  |   2 +
+ .../systemd/system/try-omarchy-ready.service  |   1 +
+ .../usr/local/lib/try-omarchy/guest-ready     |  19 +++
+ .../local/lib/try-omarchy/network-profiles    | 132 ++++++++++++++++++
+ guest/scripts/finalize-rootfs.sh              |   5 +-
+ guest/spec.json                               |   3 +
+ guest/tests/test_network_profiles.py          |  82 +++++++++++
+ guest/tests/verify.py                         |   9 +-
+ 8 files changed, 251 insertions(+), 2 deletions(-)
+ create mode 100644 guest/factory-overlay/etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf
+ create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/network-profiles
+ create mode 100644 guest/tests/test_network_profiles.py
+
+diff --git a/guest/factory-overlay/etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf b/guest/factory-overlay/etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf
+new file mode 100644
+index 0000000..405fbe0
+--- /dev/null
++++ b/guest/factory-overlay/etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf
+@@ -0,0 +1,2 @@
++[Service]
++ExecStartPre=/usr/local/lib/try-omarchy/network-profiles
+diff --git a/guest/factory-overlay/etc/systemd/system/try-omarchy-ready.service b/guest/factory-overlay/etc/systemd/system/try-omarchy-ready.service
+index 0b51244..e50ff09 100644
+--- a/guest/factory-overlay/etc/systemd/system/try-omarchy-ready.service
++++ b/guest/factory-overlay/etc/systemd/system/try-omarchy-ready.service
+@@ -4,6 +4,7 @@ After=NetworkManager.service
+ 
+ [Service]
+ Type=oneshot
++TimeoutStartSec=20min
+ ExecStart=/usr/local/lib/try-omarchy/guest-ready
+ 
+ [Install]
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/guest-ready b/guest/factory-overlay/usr/local/lib/try-omarchy/guest-ready
+index 5c5fc83..409eb82 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/guest-ready
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/guest-ready
+@@ -9,6 +9,25 @@ marker=$(cat /usr/share/try-omarchy/compat-version 2>/dev/null || true)
+ [[ -f /usr/lib/modules/$kernel/modules.dep.bin ]] || exit 0
+ complete=$(cat /usr/lib/modules/$kernel/.tryomarchy-complete 2>/dev/null || true)
+ [[ $complete == "$marker" ]] || exit 0
++# The bridge boot is ready only when both MAC-bound profiles are active.
++# A failed DHCP lease or overlapping LAN must never commit an image update.
++if [[ " $(cat /proc/cmdline) " == *" tryomarchy.network="* ]]; then
++  network_ready=false
++  for _ in {1..90}; do
++    if timeout 10 /usr/local/lib/try-omarchy/network-profiles --check; then
++      network_ready=true
++      break
++    fi
++    sleep 2
++  done
++  if ! $network_ready; then
++    for _ in {1..10}; do
++      printf 'bridge-failed\n' | socat -u - TCP:10.0.2.2:4450,connect-timeout=2 2>/dev/null && break
++      sleep 1
++    done
++    exit 1
++  fi
++fi
+ for _ in {1..10}; do
+   if printf 'ready\n' | socat -u - TCP:10.0.2.2:4450,connect-timeout=2 2>/dev/null; then
+     exit 0
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/network-profiles b/guest/factory-overlay/usr/local/lib/try-omarchy/network-profiles
+new file mode 100755
+index 0000000..a9c8962
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/network-profiles
+@@ -0,0 +1,132 @@
++#!/usr/bin/python3
++"""Boot-only NetworkManager profiles for the Windows dual-NIC option."""
++import argparse
++import ipaddress
++import json
++import os
++from pathlib import Path
++import re
++import stat
++import subprocess
++import tempfile
++import uuid
++
++MARKER = '# Try Omarchy boot network v1\n'
++NAMES = ('tryomarchy-lan.nmconnection', 'tryomarchy-private.nmconnection')
++
++
++def selection(command_line):
++    values = {}
++    keys = {'tryomarchy.network', 'tryomarchy.lan_mac', 'tryomarchy.private_mac'}
++    for word in command_line.split():
++        key, sep, value = word.partition('=')
++        if key in keys:
++            if key in values or not sep:
++                raise ValueError('Repeated or incomplete network parameter')
++            values[key] = value.lower()
++    if not values:
++        return None
++    if values.get('tryomarchy.network') != 'dual-nic-v1' or len(values) != 3:
++        raise ValueError('Incomplete or unsupported dual-NIC request')
++    macs = [values[k] for k in ('tryomarchy.lan_mac', 'tryomarchy.private_mac')]
++    for mac in macs:
++        if not re.fullmatch(r'[0-9a-f]{2}(:[0-9a-f]{2}){5}', mac) or int(mac[:2], 16) & 3 != 2:
++            raise ValueError('Locally administered unicast MAC required')
++    if macs[0] == macs[1]:
++        raise ValueError('Distinct NIC identities required')
++    return macs
++
++
++def profile(mac, private):
++    role = 'private' if private else 'lan'
++    uid = uuid.uuid5(uuid.NAMESPACE_OID, 'tryomarchy-dual-nic-v1:' + role + ':' + mac)
++    text = MARKER + f'''[connection]
++id=Try Omarchy {role}
++uuid={uid}
++type=ethernet
++autoconnect=true
++autoconnect-priority=999
++
++[ethernet]
++mac-address={mac}
++cloned-mac-address=preserve
++
++[ipv4]
++method=auto
++dhcp-client-id=mac
++may-fail=false
++'''
++    if private:
++        text += 'never-default=true\nignore-auto-routes=true\nignore-auto-dns=true\n\n[ipv6]\nmethod=disabled\n'
++    else:
++        text += 'route-metric=100\n\n[ipv6]\nmethod=auto\nmay-fail=true\n'
++    return text
++
++
++def generate(directory, macs):
++    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
++    if directory.is_symlink() or not directory.is_dir():
++        raise ValueError('Profile directory must be a real directory')
++    # Inspect both destinations before changing either. Never replace user files.
++    for name in NAMES:
++        path = directory / name
++        if path.exists() or path.is_symlink():
++            info = path.lstat()
++            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or not path.read_text().startswith(MARKER):
++                raise ValueError('Unowned runtime profile: ' + name)
++    for i, name in enumerate(NAMES):
++        path = directory / name
++        if macs is None:
++            path.unlink(missing_ok=True)
++            continue
++        fd, temp = tempfile.mkstemp(prefix='.tryomarchy-', dir=directory)
++        try:
++            with os.fdopen(fd, 'w') as out:
++                out.write(profile(macs[i], i == 1)); out.flush(); os.fsync(out.fileno())
++            os.replace(temp, path)
++        finally:
++            Path(temp).unlink(missing_ok=True)
++
++
++def healthy(macs, runner=subprocess.check_output, sysnet=Path("/sys/class/net")):
++    def run(*args):
++        return runner(args, text=True, timeout=5).strip()
++    devices = {}
++    for entry in sysnet.iterdir():
++        try:
++            devices[(entry / 'address').read_text().strip().lower()] = entry.name
++        except OSError:
++            pass
++    if any(mac not in devices for mac in macs):
++        return False
++    lan, private = [devices[mac] for mac in macs]
++    for dev, role in ((lan, 'lan'), (private, 'private')):
++        if run('nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show', dev) != 'Try Omarchy ' + role:
++            return False
++    addresses = json.loads(run('ip', '-j', '-4', 'address', 'show', 'dev', lan))
++    networks = [ipaddress.ip_network(f"{a['local']}/{a['prefixlen']}", strict=False)
++                for row in addresses for a in row.get('addr_info', []) if a.get('family') == 'inet']
++    if not networks or any(net.overlaps(ipaddress.ip_network('10.0.2.0/24')) for net in networks):
++        return False
++    defaults = json.loads(run('ip', '-j', '-4', 'route', 'show', 'default'))
++    if not defaults or any(row.get('dev') != lan for row in defaults):
++        return False
++    host_route = json.loads(run('ip', '-j', '-4', 'route', 'get', '10.0.2.2'))
++    if not host_route or host_route[0].get('dev') != private:
++        return False
++    return bool(run('nmcli', '-g', 'IP4.DNS', 'device', 'show', lan)) and not run('nmcli', '-g', 'IP4.DNS', 'device', 'show', private)
++
++
++if __name__ == '__main__':
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--check', action='store_true')
++    parser.add_argument('--cmdline', default='/proc/cmdline')
++    parser.add_argument('--directory', default='/run/NetworkManager/system-connections')
++    args = parser.parse_args()
++    try:
++        macs = selection(Path(args.cmdline).read_text())
++        if args.check:
++            raise SystemExit(0 if macs is None or healthy(macs) else 1)
++        generate(Path(args.directory), macs)
++    except (OSError, ValueError, subprocess.SubprocessError) as error:
++        parser.exit(1, 'Try Omarchy networking: ' + str(error) + '\n')
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index cdbfe12..0936a00 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -160,6 +160,9 @@ compat_paths=(
+   usr/local/lib/try-omarchy/catch-up
+   usr/share/try-omarchy/quick-start-sshd.conf
+   usr/local/lib/try-omarchy/guest-ready
++  usr/local/lib/try-omarchy/network-profiles
++  etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf
++  etc/systemd/system/try-omarchy-ready.service
+   usr/local/lib/try-omarchy/request-sshd
+   usr/local/lib/try-omarchy/share-link
+   usr/local/lib/try-omarchy/show-factory-update-notice
+@@ -204,7 +207,7 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 41 turns off system service watchdogs, which fire after Windows
+ # sleeps and restart logind under the running desktop.
+ # Revision 42 makes SSH accept only keys for the quick-start account.
+-compat_revision=42
++compat_revision=43
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/spec.json b/guest/spec.json
+index 7544f61..f8d0249 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -221,6 +221,9 @@
+     ],
+     "optionalDevices": [
+       "virtio-pinch-pci"
++    ],
++    "networkCapabilities": [
++      "dual-nic-v1"
+     ]
+   }
+ }
+diff --git a/guest/tests/test_network_profiles.py b/guest/tests/test_network_profiles.py
+new file mode 100644
+index 0000000..9c72f17
+--- /dev/null
++++ b/guest/tests/test_network_profiles.py
+@@ -0,0 +1,82 @@
++import json
++import importlib.machinery
++import importlib.util
++from pathlib import Path
++import tempfile
++import unittest
++
++SCRIPT = Path(__file__).resolve().parents[1] / 'factory-overlay/usr/local/lib/try-omarchy/network-profiles'
++spec = importlib.util.spec_from_loader('network_profiles', importlib.machinery.SourceFileLoader('network_profiles', str(SCRIPT)))
++mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
++REQUEST = 'tryomarchy.network=dual-nic-v1 tryomarchy.lan_mac=52:54:00:16:66:01 tryomarchy.private_mac=52:54:00:16:66:02'
++
++class Profiles(unittest.TestCase):
++    def test_request_rejects_ambiguous_or_unsafe_identity(self):
++        self.assertIsNone(mod.selection('root=/dev/vda rw'))
++        for value in [REQUEST+' tryomarchy.network=dual-nic-v1', REQUEST.replace('dual-nic-v1','bridge'), REQUEST.rsplit(' ',1)[0], REQUEST.replace('52:54:00:16:66:02','52:54:00:16:66:01'), REQUEST.replace('52:54','53:54'), REQUEST.replace('52:54','00:54')]:
++            with self.subTest(value=value), self.assertRaises(ValueError): mod.selection(value)
++
++    def test_repeated_bridge_and_nat_boots_preserve_user_profiles(self):
++        with tempfile.TemporaryDirectory() as root:
++            directory=Path(root); user=directory/'custom.nmconnection';user.write_text('my static settings')
++            macs=mod.selection(REQUEST);mod.generate(directory,macs)
++            first=[(directory/name).read_bytes() for name in mod.NAMES]
++            self.assertIn(b'never-default=true',first[1]);self.assertIn(b'ignore-auto-dns=true',first[1]);self.assertNotIn(b'never-default=true',first[0])
++            self.assertEqual((directory/mod.NAMES[0]).stat().st_mode & 0o777,0o600)
++            mod.generate(directory,macs);self.assertEqual(first,[(directory/name).read_bytes() for name in mod.NAMES])
++            mod.generate(directory,None);mod.generate(directory,None)
++            self.assertFalse(any((directory/name).exists() for name in mod.NAMES));self.assertEqual(user.read_text(),'my static settings')
++
++    def test_foreign_destination_or_symlink_is_not_overwritten(self):
++        for symlink in (False, True):
++            with tempfile.TemporaryDirectory() as root:
++                directory=Path(root);target=directory/mod.NAMES[1]
++                if symlink: target.symlink_to(directory/'missing')
++                else: target.write_text('user profile')
++                with self.assertRaises(ValueError):mod.generate(directory,mod.selection(REQUEST))
++                self.assertFalse((directory/mod.NAMES[0]).exists())
++                self.assertTrue(target.is_symlink() if symlink else target.read_text()=='user profile')
++
++class HealthTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.sysnet = Path(self.temp.name)
++        self.macs = ['52:54:00:16:66:01', '52:54:00:16:66:02']
++        for dev, mac in zip(('eth0', 'eth1'), self.macs):
++            (self.sysnet / dev).mkdir()
++            (self.sysnet / dev / 'address').write_text(mac)
++        self.lan = '192.0.2.48'
++        self.prefix = 24
++        self.default = 'eth0'
++        self.host = 'eth1'
++        self.private_dns = ''
++        self.lan_dns = '192.0.2.1'
++        self.role = 'lan'
++
++    def tearDown(self):
++        self.temp.cleanup()
++
++    def run_command(self, args, **kwargs):
++        if args[0] == 'ip':
++            if 'address' in args:
++                return json.dumps([{'addr_info':[{'family':'inet', 'local':self.lan, 'prefixlen':self.prefix}]}])
++            if 'default' in args:
++                return json.dumps([] if not self.default else [{'dev':self.default}])
++            return json.dumps([{'dev':self.host}])
++        if args[2] == 'GENERAL.CONNECTION':
++            return 'Try Omarchy ' + (self.role if args[-1] == 'eth0' else 'private')
++        return self.lan_dns if args[-1] == 'eth0' else self.private_dns
++
++    def test_healthy_routes_and_dns(self):
++        self.assertTrue(mod.healthy(self.macs, self.run_command, self.sysnet))
++
++    def test_failed_routing_and_lease(self):
++        for field, value in [('default', 'eth1'), ('default', ''), ('host', 'eth0'),
++                             ('private_dns', '10.0.2.3'), ('lan_dns', ''),
++                             ('lan', '10.0.2.80'), ('prefix', 0), ('role', 'User profile')]:
++            with self.subTest(field=field, value=value):
++                previous = getattr(self, field)
++                setattr(self, field, value)
++                self.assertFalse(mod.healthy(self.macs, self.run_command, self.sysnet))
++                setattr(self, field, previous)
++        self.assertFalse(mod.healthy([self.macs[0], '52:54:00:00:00:09'], self.run_command, self.sysnet))
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index e72e55b..248ce30 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -293,7 +293,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=42" in finalize_rootfs
++        "compat_revision=43" in finalize_rootfs
+         and "usr/share/try-omarchy/quick-start-sshd.conf" in compat_paths
+         and "etc/systemd/system/service.d/10-try-omarchy-watchdog.conf" in compat_paths
+         and "usr/local/lib/try-omarchy/catch-up" in compat_paths
+@@ -400,6 +400,13 @@ def main() -> None:
+     )
+ 
+     ready_unit = read(GUEST / "factory-overlay/etc/systemd/system/try-omarchy-ready.service")
++    check(spec["runtime"].get("networkCapabilities") == ["dual-nic-v1"], "guest declares automatic dual-NIC routing")
++    network = GUEST / "factory-overlay/usr/local/lib/try-omarchy/network-profiles"
++    py_compile.compile(str(network), doraise=True)
++    check(os.access(network, os.X_OK), "boot network generator is executable")
++    network_dropin = "etc/systemd/system/NetworkManager.service.d/try-omarchy-network.conf"
++    check("ExecStartPre=/usr/local/lib/try-omarchy/network-profiles" in read(GUEST / "factory-overlay" / network_dropin), "profiles exist before NetworkManager activates adapters")
++    check(network_dropin in compat_paths and "usr/local/lib/try-omarchy/network-profiles" in compat_paths, "dual-NIC profiles migrate onto persistent disks")
+     ready_script = GUEST / "factory-overlay/usr/local/lib/try-omarchy/guest-ready"
+     initcpio_config = read(GUEST / "factory-overlay/etc/mkinitcpio.conf.d/90-try-omarchy.conf")
+     compat_install = GUEST / "factory-overlay/etc/initcpio/install/tryomarchy_compat"
+-- 
+2.43.0
+
