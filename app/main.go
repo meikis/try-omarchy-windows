@@ -29,6 +29,10 @@ import (
 const appTitle = "Try Omarchy"
 
 type config struct {
+	bridge                      *bridgePlan
+	bridgeTapName               string
+	bridgeFailure               <-chan error
+	bridgeQemu                  *os.Process
 	desktop                     desktopPreferences
 	audioDevices                audioPreferences
 	dir, hostDir, payloadDir    string
@@ -122,6 +126,9 @@ func finishSetupCancellation(cfg *config, err error) bool {
 
 func main() {
 	cfg := &config{}
+	bridgePlanPath := flag.String("bridge-lab-plan", "", "opt in to prepared dual-network forwarding in a disposable wired Windows lab")
+	bridgeRecover := flag.Bool("bridge-lab-recover", false, "recover the owned lab TAP bindings without starting a VM")
+	bridgeBroker := flag.String("bridge-broker", "", "internal: isolated elevated bridge broker")
 	removeDataOnCancel := false
 	defaultDir := filepath.Join(os.Getenv("LOCALAPPDATA"), defaultDataDirectoryName)
 	flag.StringVar(&cfg.dir, "dir", defaultDir, "Try Omarchy data directory (virtual machine, runtime, and settings)")
@@ -179,6 +186,35 @@ func main() {
 	updateWaitPID := flag.Int("update-wait-pid", 0, "internal: process to wait for before replacing the launcher")
 	updateRestartArgs := flag.String("update-restart-args", "", "internal: encoded launcher restart arguments")
 	flag.Parse()
+	if *bridgePlanPath != "" && !*bridgeRecover && !*startImmediately {
+		fatal("Use -start with the explicit bridge lab plan.")
+	}
+	if *bridgeBroker != "" {
+		if err := runBridgeBroker(*bridgeBroker); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if *bridgePlanPath != "" {
+		var err error
+		cfg.bridge, err = loadBridgePlan(*bridgePlanPath)
+		if err != nil {
+			fatal("Cannot use bridge lab plan: %v", err)
+		}
+	}
+	if *bridgeRecover {
+		if cfg.bridge == nil {
+			fatal("Bridge recovery requires the exact saved -bridge-lab-plan.")
+		}
+		broker, err := startBridgeBroker(cfg.bridge, "Recover")
+		if err != nil {
+			fatal("Bridge recovery failed: %v", err)
+		}
+		if err = broker.Close(); err != nil {
+			fatal("Bridge recovery failed: %v", err)
+		}
+		return
+	}
 	if *openAbout {
 		runAbout()
 		return
@@ -846,11 +882,23 @@ func loadLaunchAudioPreferences(dir string) (audioPreferences, error) {
 func supervise(cfg *config, cmdline string) bool {
 	var proc *exec.Cmd
 	var qmp *qmpConn
+	var bridge *bridgeSession
+	stopBridge := func() {
+		if bridge != nil {
+			if err := bridge.Close(); err != nil {
+				logf("bridge cleanup: %v", err)
+			}
+			bridge = nil
+		}
+		cfg.bridgeFailure = nil
+	}
+	defer stopBridge()
 	// The worst case can consume one attempt each for nested virtualization,
 	// audio, runtime rollback, and GPU fallback before walking 64 GiB down to a
 	// final 1 GiB memory attempt. Keep a small margin without allowing a loop.
 	const maxLaunchAttempts = 12
 	for attempt := 1; attempt <= maxLaunchAttempts; attempt++ {
+		stopBridge()
 		if setupCancelled() {
 			return false
 		}
@@ -875,6 +923,14 @@ func supervise(cfg *config, cmdline string) bool {
 		// Local forwards changed while running (forward_live.go) carry into a
 		// reboot instead of reverting to the launch list.
 		cfg.forwards = forwardsForBoot(cfg.launchForwards)
+		if cfg.bridge != nil {
+			bridge, err = startBridgeBroker(cfg.bridge, "Start")
+			if err != nil {
+				fatal("Bridge lab startup failed: %v", err)
+			}
+			cfg.bridgeTapName = bridge.TapName
+			cfg.bridgeFailure = bridge.failed
+		}
 		proc = exec.Command(cfg.qemu, buildQemuArgs(cfg, cmdline)...)
 		audioSelection := cfg.audio == "sdl" && audioRuntimeSupportsSelection(cfg.qemu)
 		if !audioSelection && (cfg.audioDevices.Output != "" || (!cfg.desktop.MicrophoneDisabled && cfg.audioDevices.Input != "")) {
@@ -901,17 +957,33 @@ func supervise(cfg *config, cmdline string) bool {
 			defer ef.Close()
 		}
 		if err := proc.Start(); err != nil {
+			stopBridge()
 			fatal("QEMU failed to start: %v", err)
 		}
 		qemuPid.Store(uint32(proc.Process.Pid))
 		exited := make(chan error, 1)
+		attemptBridge := bridge
+		if bridge != nil {
+			cfg.bridgeQemu = proc.Process
+		}
 		go func() {
 			err := proc.Wait()
+			attemptBridge.NoteQemuEnded()
 			if err != nil {
 				logf("QEMU process exited with error: %v", err)
 			}
 			exited <- err
 		}()
+
+		if bridge != nil {
+			if err := bridge.Attach(proc.Process.Pid, cfg.qemu); err != nil {
+				proc.Process.Kill()
+				<-exited
+				qemuPid.Store(0)
+				stopBridge()
+				fatal("Bridge attach failed: %v", err)
+			}
+		}
 
 		// Do NOT touch QMP during early guest boot: a monitor connection in
 		// the first seconds reliably wedges QEMU's main loop under WHPX (the
@@ -923,6 +995,12 @@ func supervise(cfg *config, cmdline string) bool {
 	probe:
 		for qmp == nil && time.Now().Before(deadline) {
 			select {
+			case err := <-cfg.bridgeFailure:
+				proc.Process.Kill()
+				<-exited
+				qemuPid.Store(0)
+				stopBridge()
+				fatal("Bridge forwarding stopped: %v", err)
 			case <-setupCancelWake:
 				proc.Process.Kill()
 				<-exited
@@ -1049,6 +1127,14 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			movedBootPending = false
 		}
 		select {
+		case err := <-cfg.bridgeFailure:
+			logf("Bridge forwarding stopped: %v", err)
+			if cfg.bridgeQemu != nil {
+				cfg.bridgeQemu.Kill()
+			}
+			waitExit(exited, 15*time.Second, cfg)
+			errorBox(fmt.Sprintf("Bridge forwarding stopped: %v\n\nThe lab VM was stopped. Recover from the independent console before relaunching.", err))
+			return false
 		case <-exited:
 			procDown = true
 		case line, ok := <-lines:

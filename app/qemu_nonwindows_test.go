@@ -16,6 +16,10 @@ const (
 )
 
 type config struct {
+	bridge                      *bridgePlan
+	bridgeTapName               string
+	bridgeFailure               <-chan error
+	bridgeQemu                  *os.Process
 	desktop                     desktopPreferences
 	audioDevices                audioPreferences
 	dir, hostDir, payloadDir    string

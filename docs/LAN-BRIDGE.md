@@ -25,9 +25,9 @@ administrator action. The bridge helper never elevates, downloads or installs a
 driver, removes a TAP, or uninstalls a shared VPN driver. Record the new device's
 GUID and PNP instance before setup. Do not borrow an existing VPN device.
 
-QEMU opens Windows TAP by its connection name. A future launcher path must
-resolve the selected GUID and PNP identity to the current name immediately
-before launch. Adapter rename or loss is not authority to select another device.
+QEMU opens Windows TAP by its connection name. The experimental launcher path
+resolves the selected GUID and PNP identity to the current name before launch.
+Adapter rename or loss is not authority to select another device.
 
 ## Read-only preflight
 
@@ -250,7 +250,7 @@ Secure Boot/HVCI, Windows 10, administrator cancellation and normal guest
 integration still need validation. `BridgeAccepted` remains false. NAT and
 existing forwarding remain the launcher defaults.
 
-## Launcher integration still required
+## Normal guest and Settings work
 
 Keep the LAN NIC separate from a private NAT service NIC. Existing guest
 integrations use `10.0.2.2`. Guest route configuration must prefer LAN for normal
@@ -275,3 +275,73 @@ saved NAT/forwarding configuration and verify host recovery before offering NAT.
 - Stable guest MACs, private integration channels and NAT/forwarding regression.
 - Physical wired Ethernet and signed-driver checks with Secure Boot/HVCI enabled
   on supported Windows versions. A virtual lab does not replace these checks.
+
+## Experimental launcher ownership
+
+The launcher can now own the Npcap helper in an explicitly declared disposable
+Windows lab. This is a development option, not a supported network preference.
+It requires the separately installed, pinned TAP and Npcap dependencies, an
+unused dedicated TAP, wired DHCP and an independent local recovery console.
+Driver installation remains manual. Npcap binaries are not bundled.
+
+Save an installation-local JSON plan with `version: 1`, the exact `wiredGuid`,
+`wiredPnp`, `tapGuid` and `tapPnp`, distinct locally administered `lanMac` and
+`privateMac`, `driverDirectory`, `probeName`, `probeAddress` and `probePort`.
+Retain the MACs and plan across boots. Set `disposableLab`, `localConsole`,
+`dedicatedTap` and `guestNetworkPrepared` only after satisfying those conditions.
+The guest must already configure both NICs by MAC: LAN DHCP provides the default
+route and DNS; the private NIC keeps its connected `10.0.2.0/24` route without a
+private default route or private DNS. Ordinary released guests have not been
+accepted with this routing configuration.
+
+Start only that candidate installation:
+
+```powershell
+TryOmarchy.exe -start -dir C:\BridgeCandidate -bridge-lab-plan C:\BridgeCandidate\bridge.json
+```
+
+A separate launcher broker requests Windows permission. It executes the helper
+embedded in the candidate binary, extracted under administrator/SYSTEM-only
+permissions, rather than loading elevated code from the installation or plan.
+The broker does not elevate QEMU. Its authenticated loopback connection checks
+the parent process and completes a handshake before preparation. Cancelling
+permission leaves the VM stopped and does not prepare the TAP.
+
+Preparation changes the exact dedicated TAP's IPv4/IPv6 and dependent Microsoft
+client, server and NetBIOS bindings. Windows can change these dependencies when
+[IP bindings change](https://learn.microsoft.com/en-us/powershell/module/netadapter/set-netadapterbinding?view=windowsserver2025-ps). Recovery verifies the complete saved binding inventory. The wired
+adapter's bindings, addressing and offload settings are not changed. A protected,
+durable journal records the original TAP bindings before changes. Capture opens
+before QEMU starts. QEMU gets the selected TAP's current connection name and a
+separate private NAT NIC with the existing forwards. The broker verifies QEMU's
+PID, creation time, executable and selected dual-network command line. Another
+launcher operation or lab frame pump cannot take the same TAP.
+
+The helper has no periodic lab-duration restart. Explicit stop, parent connection
+loss and QEMU exit release capture handles and recover owned TAP bindings.
+Adapter loss, changed identity/bindings or packet failure stops forwarding.
+The launcher stops that lab VM rather than silently switching networks. Failed
+cleanup or failed host connectivity keeps `RecoveryRequired` and blocks another
+start. Recover through the independent console after reconnecting the selected
+wired adapter:
+
+```powershell
+TryOmarchy.exe -bridge-lab-plan C:\BridgeCandidate\bridge.json -bridge-lab-recover
+```
+
+Recovery does not need Npcap running, destroy a Windows bridge, remove a device,
+uninstall a shared driver or select another adapter. It tolerates removal of the
+owned TAP and refuses replacement identities or unrelated TAP binding edits.
+
+In the disposable Windows VM, launcher-owned forwarding passes guest DHCP/DNS,
+direct host TCP, private host services and loopback forwarding. Direct TCP
+payloads of 1 byte, 1 MiB and 2 MiB return unchanged. Duplicate setup is refused;
+explicit stop, repeated cleanup, QEMU exit and actual parent-process exit recover
+the TAP. Virtual Ethernet loss stops capture and retains recovery until the
+selected adapter reconnects. A replacement PNP identity is refused before setup.
+These checks use a prepared diskless fixture, not the ordinary released guest.
+
+NAT, port forwarding and the normal launcher menu remain the release defaults.
+Physical Ethernet, Windows 10, hardware offload, Secure Boot/HVCI, IPv6 address
+configuration, guest migration and a supported Settings preference remain
+acceptance work. This option must not be used on a remotely accessed Wi-Fi host.

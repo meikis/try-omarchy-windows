@@ -118,6 +118,17 @@ public static class NpcapFramePump
     {
         if (seconds < 1 || seconds > 600)
             throw new ArgumentException("Duration must be 1 to 600 seconds");
+        Stopwatch duration = Stopwatch.StartNew();
+        using (ManualResetEventSlim link = new ManualResetEventSlim(true))
+            return RunOwned(wired, tap, guestMac, wiredMac, guard, delegate { }, delegate { return duration.Elapsed.TotalSeconds < seconds; }, link);
+    }
+
+    // The launcher owns lifetime; no periodic handle teardown or packet loss at
+    // the lab duration limit. Readiness follows opening all capture handles.
+    public static Result RunOwned(string wired, string tap, string guestMac, string wiredMac, Action guard, Action ready, Func<bool> keepRunning, ManualResetEventSlim tapReady)
+    {
+        if (ready == null || keepRunning == null || tapReady == null)
+            throw new ArgumentNullException("Lifetime callbacks are required");
         if (new Guid(wired) == new Guid(tap))
             throw new ArgumentException("Select two distinct adapters");
         byte[] mac = ParseMac(guestMac), host = ParseMac(wiredMac);
@@ -155,7 +166,6 @@ public static class NpcapFramePump
             HostTcpSegmentation tcp = new HostTcpSegmentation();
             Exception failure = null;
             Thread[] threads = new Thread[2];
-            Stopwatch timer = Stopwatch.StartNew();
             try
             {
                 h[0] = Capture(tap, "ether src " + text, true);
@@ -194,9 +204,15 @@ public static class NpcapFramePump
                                     for (int m = 0; m < 6; m++)
                                         if (frame[6 + m] != mac[m])
                                             throw new Exception("Unexpected guest source MAC");
+                                    // A real guest transmit also proves the TAP has opened.
+                                    tapReady.Set();
                                     tcp.ObserveGuest(frame);
                                 }
 
+                                // Wired broadcasts can arrive before QEMU opens TAP.
+                                // Keep capture ready without injecting into disconnected media.
+                                if (d == 1 && !tapReady.IsSet)
+                                    continue;
                                 byte[][] frames = new byte[][] { frame };
                                 if (d == 1)
                                 {
@@ -235,7 +251,8 @@ public static class NpcapFramePump
                     threads[d].Start();
                 }
 
-                while (timer.Elapsed.TotalSeconds < seconds && Volatile.Read(ref failure) == null)
+                ready();
+                while (keepRunning() && Volatile.Read(ref failure) == null)
                 {
                     guard();
                     Thread.Sleep(250);
