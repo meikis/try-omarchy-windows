@@ -50,20 +50,18 @@ fixes. Equivalent behavior is tracked below only where it makes sense on Windows
 | Trackpad pinch | [r18 bridge](PINCH-ZOOM.md), virtual touchpad and guest rules for new and existing guests ([#184](https://github.com/omacom/try-omarchy-windows/pull/184)); on by default for guest images that declare the device; synthetic and AMD-laptop physical Chromium pinch/scroll tests pass | Shipped in `v0.4.0`; Firefox and broader host/DPI/fullscreen acceptance |
 | Windows Hello sudo | Opt-in since `v0.5.0`: launcher WebAuthn bridge, guest broker and a single PAM rule; one Hello prompt per sudo with password fallback ([design](WINDOWS-HELLO.md), [laptop run](evidence/HELLO-SUDO-LAPTOP-2026-09-26.md)) | Other Hello hardware (fingerprint, face) and Windows 10 |
 | 1Password host authentication | Opt-in since `v0.6.0`: 1Password's system authentication unlock asks for Windows Hello through a polkit agent scoped to the installed 1Password process ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)); canceling falls back to the guest password | 1Password still asks for its account password after it restarts |
-| Bridged networking | NAT and explicit port forwarding exist | [True LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166), with supported adapter, privilege and firewall handling |
+| Bridged networking | NAT and explicit port forwarding ship; [signed TAP lab helpers](LAN-BRIDGE.md) test and recover selected wired setup, with controlled guest DHCP/TCP passing | [True LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166), with supported adapter, privilege and firewall handling |
 | Host battery | Shipped in `v0.2.0`; the AMD laptop's 99% charging state appeared as BAT0/ADP0 and in UPower | Desktop/no-battery transition remains to be observed on a suitable host |
 | Guest RAM reclamation | Shipped with r19 in `v0.2.0`; three physical touch/free cycles returned about 797 MiB after the third 768 MiB allocation | Follow up on concrete memory reports |
 | Keyboard and language | Windows time zone, keyboard layout and display language follow the host | Physical ANSI/ISO/JIS geometry and broader input-method acceptance |
 
-Windows Hello, true bridged networking, and embedded Windows app windows remain
-feature work. Live audio switching shipped in `v0.3.0` with r20c; public `v0.2.0`
-remains the previous r19 release. The [signed and public v0.3.0 acceptance
-record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md) and
-[publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/35978943238)
-record the release checks. Settings, battery mirroring, live memory reclamation,
-approved app launch, and fullscreen monitor selection shipped in `v0.2.0`. Pinch
-is on by default since `v0.4.0`; its physical gesture and scrolling checks
-passed on the laptop.
+Windows Hello sudo shipped in `v0.5.0`, and 1Password unlock and direct drops
+shipped in `v0.6.0`. True bridged networking and embedded Windows app windows
+remain feature work. Live audio switching shipped in `v0.3.0`; Settings,
+battery mirroring, live memory reclamation, approved app launch and fullscreen
+monitor selection shipped in `v0.2.0`. Pinch is on by default since `v0.4.0`,
+with physical gesture and scrolling checks passing on the laptop. The current
+normal release is `v0.6.2`.
 
 ## Work sequence toward comparable everyday use
 
@@ -73,12 +71,12 @@ passed on the laptop.
    [public and physical acceptance record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md)
    documents the available laptop checks. Two physical endpoints per direction
    and hotplug remain to be tested on suitable hardware.
-2. **Add signed Windows Hello approval (#165).** Mirror the Mac's opt-in sudo
-   model: enroll only after the guest password, pair a per-guest public key,
-   sign a fresh request with Windows Hello, and verify it inside guest PAM.
-   Denial and unsupported hosts must fall back to password. After PIN setup,
-   the current laptop can test approval and denial in the eventual guest flow.
-   Shipped in `v0.5.0`. The Mac's separate, process-scoped 1Password unlock
+2. **Continue Windows Hello hardware acceptance (#165).** The shipped opt-in
+   model mirrors the Mac: enroll only after the guest password, pair a per-guest
+   public key, sign a fresh request with Windows Hello, and verify it inside guest PAM.
+   Denial and unsupported hosts must fall back to password. The laptop passed
+   approval, denial and password fallback for the `v0.5.0` release. The separate,
+   process-scoped 1Password unlock
    ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)) followed
    in `v0.6.0` without changing general guest PAM policy.
 3. **Offer a real LAN mode (#166).** Keep NAT and explicit forwards as the

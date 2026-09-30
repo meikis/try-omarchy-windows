@@ -79,8 +79,9 @@ A separate management NIC cannot satisfy the TCP probe. Identity, driver and
 configuration checks run again before creation. A failed final preflight leaves
 external changes alone rather than restoring an obsolete baseline.
 
-Windows creates the explicitly selected pair. The helper obtains the actual
-bridge GUID from `netsh bridge list` and verifies exactly those members. Host
+Windows creates the selected pair with TAP first and Ethernet second. Wired-first
+creation on the lab host reports both members but leaves the TAP bridge protocol
+unattached. The helper obtains the actual bridge GUID from `netsh bridge list` and verifies exactly those members. Host
 DHCP, default route, DNS and bound TCP must pass. Read-only `pktmon list --json`
 must also show the NDIS bridge protocol attached to each exact member's miniport.
 An enabled `ms_implat` binding alone is insufficient. Missing, ambiguous or
@@ -112,26 +113,51 @@ must not race it. Inspect through the independent console before recovering.
 Failed restoration or host probes also keep the journal pending. Do not delete
 that journal or enable a new bridge over it.
 
-## Current forwarding blocker
+## Controlled forwarding and limits
 
-A disposable Windows VM with a separate management NIC can create the selected
-TAP/Ethernet bridge and retain host DHCP, DNS and bound TCP connectivity. A
-nested QEMU guest emits LAN DHCP requests, but those frames do not reach the
-isolated virtual Ethernet peer. Delaying guest startup does not produce a lease.
-The guest's separate private NAT NIC and host service remain reachable.
+The signed TAP-Windows6 path now forwards IP traffic in a disposable Windows 11
+VM with virtual Ethernet and an independent management NIC. A fresh-device
+comparison reproduced the missing protocol with wired-first creation and passed
+with TAP-first creation. The native backend keeps that order and retains the
+protocol-attachment guard. Binding toggles and TAP restarts did not resolve the
+wired-first failure.
 
-Packet Monitor captures host DHCP through the Ethernet and bridge components,
-but shows no guest DHCP entering the Windows network stack. The TAP's enabled
-`ms_implat` binding has no attached NDIS bridge protocol, including while its
-media is connected. Native overlapped TAP writes succeed with the full frame
-length. Toggling that binding or removing and re-adding the connected TAP does
-not attach the protocol. The helper now rejects this state and restores the
-original host network. The underlying attachment failure remains unresolved.
+A nested QEMU guest with distinct LAN and private-service NICs passed:
 
-This result does not accept TAP-Windows6 plus the current Windows bridge path
-for guest LAN traffic. Establish bidirectional forwarding with packet captures
-at the guest TAP and Ethernet peer before adding a normal launcher preference.
-A different Windows version or physical NIC still requires its own validation.
+- LAN DHCP, an explicit DNS A query and guest-to-peer TCP.
+- Direct TCP from both Windows and an independent Ethernet peer to the guest's
+  own LAN address, without a LAN port forward.
+- IPv4 broadcast, outbound multicast and inbound multicast.
+- IPv6 neighbor discovery and ICMPv6 using explicit lab addresses. IPv6 router
+  advertisement, SLAAC and DHCPv6 are not yet accepted.
+- Private host-service access, loopback-only forwarding and a LAN default route
+  alongside the connected private service route.
+- The same guest MAC, DHCP client identifier and LAN lease across relaunch.
+
+Host DHCP, DNS and source-bound TCP passed before setup, while active and after
+cleanup. Repeated setup/cleanup, exact-identity adapter rename and a forced
+post-creation probe failure passed with the native helper. Virtual Ethernet
+link loss retained `RecoveryRequired`; reconnecting completed recovery. Removing
+the owned TAP while bridged also restored host connectivity, and repeated
+cleanup passed. An actual Windows VM reboot preserved the owned bridge, its
+protocol attachment and host connectivity; recovery after reboot passed. The
+independent management NIC's bindings, settings, addresses and routes remained
+unchanged.
+PowerShell 5.1 and Core run the same preflight, transaction, attachment and
+native command-order tests in CI.
+
+This does not establish transparent Ethernet forwarding. Peer captures show
+Windows rewriting the source Ethernet MAC and DHCP `chaddr` to the wired MAC,
+while retaining the guest's DHCP client identifier. A raw experimental EtherType
+`0x88b5` broadcast is present in the guest capture but absent at the Ethernet
+peer. Both selected members report compatibility mode disabled. Resolve or
+explicitly account for those limitations before offering a true LAN bridge;
+do not describe this candidate as preserving the guest MAC on the wire.
+
+The lab uses Windows build 26300, virtual Ethernet and a single guest. It does
+not establish behavior on physical Ethernet, supported Windows 10 builds,
+Secure Boot/HVCI, DHCP servers that rely on `chaddr`, or multiple guests. NAT
+and existing LAN forwarding remain the supported launcher paths.
 
 ## Launcher integration still required
 

@@ -293,7 +293,9 @@ function New-NativeBridgeBackend {
                     throw 'Adapter state changed after the baseline. Run preflight again.'
                 }
             } catch { throw [OperationCanceledException]::new($_.Exception.Message) }
-            Invoke-BridgeCommand @('create', "{$($j.Before.Wired.Guid)}", "{$($j.Before.Tap.Guid)}")
+            # TAP must be first. Wired-first creation reports both members but
+            # leaves the virtual TAP's NDIS bridge protocol unattached.
+            Invoke-BridgeCommand @('create', "{$($j.Before.Tap.Guid)}", "{$($j.Before.Wired.Guid)}")
         }
         FindOwned = { param($j) Find-OwnedBridge $j }
         ProbeBridge = {
