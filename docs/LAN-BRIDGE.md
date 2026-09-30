@@ -247,8 +247,9 @@ Hardware-specific offload behavior, fragmented host traffic, IPv6 routing/fragme
 headers, throughput, VLAN wire behavior, sleep and broader adapter/version
 coverage remain unaccepted. Unsupported captured host packets stop the helper
 rather than changing the NIC's offload configuration. Physical wired Ethernet,
-Secure Boot/HVCI, Windows 10, physical administrator interaction and complete Windows guest-image
-integration still need validation. `BridgeAccepted` remains false. NAT and
+Secure Boot/HVCI, Windows 10, physical administrator interaction, normal
+WHPX/graphical launcher startup and persistent guest migration still need
+validation. `BridgeAccepted` remains false. NAT and
 existing forwarding remain the launcher defaults.
 
 ## Guest routing and Settings
@@ -283,8 +284,25 @@ selection. A completed journal remains recoverable after its owned TAP is gone.
 relaunches and same-installation moves. Guest backups and portable copies omit
 this host-bound file, so they default to NAT. Existing private integrations and
 port forwards stay on the private NIC. Direct LAN exposure follows the guest
-firewall. Normal Windows guest image integration and physical wired acceptance
-remain separate checks; this option is still restricted to disposable labs.
+firewall. This option is still restricted to disposable labs.
+
+The [complete candidate image build and boot](https://github.com/omacom/try-omarchy-windows/actions/runs/36668456573)
+passes at source `8f4d3dc`. That exact factory image also passes a headless
+Windows TCG boot through the candidate launcher broker, with automatic
+NetworkManager profiles and its normal systemd-resolved stub. LAN DHCP, DNS,
+hostname HTTP and private host-service access pass. Windows, the independent
+virtual Ethernet peer and the private loopback forward receive exact 2 MiB TCP
+payloads; Windows and the peer also upload and receive exact 2 MiB payloads.
+No guest routes or resolver files are edited by the probe. Snapshot-only test
+services are not part of the image. QEMU shutdown and repeated broker cleanup
+restore the TAP. DHCP capture preserves the guest Ethernet MAC, `chaddr` and
+client identifier.
+
+Normal WHPX/graphical launcher acceptance remains open. The disposable
+Windows VM masks VMX and
+has no usable WHPX accelerator. Persistent migration, physical administrator
+interaction, real Ethernet and Secure Boot/HVCI still need separate checks.
+Failed lab runs also recovered the TAP before retry.
 
 ## Acceptance gates
 
@@ -365,5 +383,6 @@ These checks use a prepared diskless fixture, not the ordinary released guest.
 
 NAT, port forwarding and the normal launcher menu remain the release defaults.
 Physical Ethernet, Windows 10, hardware offload, Secure Boot/HVCI, IPv6 address
-configuration, guest migration and a supported Settings preference remain
-acceptance work. This option must not be used on a remotely accessed Wi-Fi host.
+configuration, persistent guest migration and physical Settings/UAC interaction
+remain acceptance work. The implemented Settings preference remains lab-only.
+This option must not be used on a remotely accessed Wi-Fi host.

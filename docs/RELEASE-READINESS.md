@@ -186,8 +186,11 @@ launch bridge, and fullscreen monitor choice. Windows Hello sudo shipped in
 `v0.5.0`; 1Password unlock and direct application drops shipped in `v0.6.0`.
 [LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166)
 remains feature work. Its [signed TAP lab path](LAN-BRIDGE.md) has controlled
-guest DHCP/TCP coverage, with Ethernet identity and physical acceptance still
-open. NAT and existing port forwarding remain the launcher default. The current
+guest DHCP/TCP coverage. Npcap preserves Ethernet and DHCP identity at the
+virtual peer, and the complete candidate guest passes headless Windows lab
+networking. Normal WHPX/graphical launcher startup, persistent migration and
+physical acceptance remain open. NAT and existing port forwarding remain the
+launcher default. The current
 user base of thousands with relatively few reports is
 positive evidence about the everyday path; broad hardware and Windows 10
 acceptance are not 1.0 gates. Automatic pinch shipped in `v0.4.0`; its
