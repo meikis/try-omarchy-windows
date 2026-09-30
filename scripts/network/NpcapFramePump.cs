@@ -13,6 +13,7 @@ public static class NpcapFramePump
         public int GuestOut;
         public int PeerIn;
         public int Raw;
+        public int Segmented;
     }
 
     static int active;
@@ -75,7 +76,7 @@ public static class NpcapFramePump
     static IntPtr Capture(string guid, string filter, bool reading)
     {
         StringBuilder err = new StringBuilder(512);
-        IntPtr cap = open(@"\Device\NPF_{" + new Guid(guid).ToString().ToUpperInvariant() + "}", 65535, 1, 100, err);
+        IntPtr cap = open(@"\Device\NPF_{" + new Guid(guid).ToString().ToUpperInvariant() + "}", 262144, 1, 100, err);
         if (cap == IntPtr.Zero)
             throw new Exception("Npcap open failed: " + err);
         try
@@ -150,7 +151,8 @@ public static class NpcapFramePump
             string text = BitConverter.ToString(mac).Replace('-', ':');
             IntPtr[] h = new IntPtr[5];
             int[] count = new int[2];
-            int raw = 0, stop = 0;
+            int raw = 0, stop = 0, segmented = 0;
+            HostTcpSegmentation tcp = new HostTcpSegmentation();
             Exception failure = null;
             Thread[] threads = new Thread[2];
             Stopwatch timer = Stopwatch.StartNew();
@@ -183,7 +185,7 @@ public static class NpcapFramePump
                                 if (n < 0)
                                     throw new Exception("Capture terminated: " + n);
                                 int captured = Marshal.ReadInt32(header, 8), length = Marshal.ReadInt32(header, 12);
-                                if (captured != length || length < 14 || length > 9022)
+                                if (captured != length || length < 14 || length > (d == 1 ? 262144 : 9022))
                                     throw new Exception("Truncated or oversized Ethernet frame");
                                 byte[] frame = new byte[length];
                                 Marshal.Copy(data, frame, 0, length);
@@ -192,8 +194,10 @@ public static class NpcapFramePump
                                     for (int m = 0; m < 6; m++)
                                         if (frame[6 + m] != mac[m])
                                             throw new Exception("Unexpected guest source MAC");
+                                    tcp.ObserveGuest(frame);
                                 }
 
+                                byte[][] frames = new byte[][] { frame };
                                 if (d == 1)
                                 {
                                     bool fromHost = true;
@@ -201,15 +205,20 @@ public static class NpcapFramePump
                                         if (frame[6 + m] != host[m])
                                             fromHost = false;
                                     if (fromHost)
-                                        CompleteHostChecksums(frame);
+                                        frames = tcp.NormalizeHost(frame);
+                                    else if (length > 9022)
+                                        throw new Exception("Oversized peer Ethernet frame");
+                                    if (frames.Length > 1)
+                                        Interlocked.Increment(ref segmented);
                                 }
 
                                 bool toHost = d == 0;
                                 for (int m = 0; m < 6 && toHost; m++)
                                     if (frame[m] != host[m])
                                         toHost = false;
-                                if (!toHost && send(h[d * 2 + 1], frame, length) != 0)
-                                    throw new Exception("Transmit injection failed: " + Marshal.PtrToStringAnsi(error(h[d * 2 + 1])));
+                                foreach (byte[] output in frames)
+                                    if (!toHost && send(h[d * 2 + 1], output, output.Length) != 0)
+                                        throw new Exception("Transmit injection failed: " + Marshal.PtrToStringAnsi(error(h[d * 2 + 1])));
                                 if (d == 0 && (toHost || (frame[0] & 1) != 0) && send(h[4], frame, length) != 0)
                                     throw new Exception("Host receive injection failed: " + Marshal.PtrToStringAnsi(error(h[4])));
                                 Interlocked.Increment(ref count[d]);
@@ -246,7 +255,7 @@ public static class NpcapFramePump
             }
             if (failure != null)
                 throw failure;
-            return new Result { GuestOut = count[0], PeerIn = count[1], Raw = raw };
+            return new Result { GuestOut = count[0], PeerIn = count[1], Raw = raw, Segmented = segmented };
         }
         finally
         {

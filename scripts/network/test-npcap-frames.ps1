@@ -1,7 +1,7 @@
 # Pure packet and argument checks. Never opens a device or touches a session.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-Add-Type -Path (Join-Path $PSScriptRoot 'NpcapFramePump.cs')
+Add-Type -Path @((Join-Path $PSScriptRoot 'NpcapFramePump.cs'),(Join-Path $PSScriptRoot 'HostTcpSegmentation.cs'))
 $script:checks = 0
 function Bytes([string]$Hex) {
     [byte[]]$data = New-Object byte[] ($Hex.Length / 2)

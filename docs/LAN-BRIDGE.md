@@ -215,6 +215,19 @@ are not rewritten. Packet tests include a captured pre-offload SYN and its
 hardware-completed wire vector, IPv4/IPv6 UDP, VLAN preservation, malformed
 frames and startup arguments. Both PowerShell dialects run these checks in CI.
 
+Captured host TCP frames larger than 1500 IP bytes are split into complete
+Ethernet frames. The pump observes the guest SYN or SYN-ACK receive MSS and
+accounts for IP/TCP options and IPv6 extensions. Each segment stays within the
+advertised receive limit and the standard Ethernet MTU. Sequence numbers,
+lengths, checksums and IP IDs are regenerated; FIN/PSH stay on the last segment
+and CWR on the first. VLAN bytes and TCP options are preserved. LSOv2 zero-length
+headers and captures above 64 KiB have packet-vector coverage. The pcap API
+does not expose the NDIS offload MSS, so missing or expired handshakes stop the
+helper with a reconnect message. Tracking is bounded to 4096 connections and
+expires after ten inactive minutes. Authenticated TCP segmentation is rejected.
+See [Microsoft's LSO contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/offloading-the-segmentation-of-large-tcp-packets)
+and [RFC 6691](https://www.rfc-editor.org/rfc/rfc6691.html).
+
 The native helper passed unchanged guest Ethernet MAC and DHCP `chaddr`, a
 bidirectional experimental EtherType `0x88b5` exchange, LAN DHCP/DNS/TCP, direct
 Windows and peer TCP, IPv4 broadcast/multicast, explicit-address IPv6 ping and
@@ -223,8 +236,13 @@ Ethernet loss stopped the helper and retained independent management access;
 reconnection and a fresh helper run recovered forwarding. These are controlled
 virtual-Ethernet results.
 
+The prior helper timed out on a 13,194-byte captured Windows TCP frame. The
+segmentation candidate passes 1 MiB and 2 MiB direct Windows-to-guest round trips
+over IPv4 and IPv6 with matching payload hashes. The virtual adapter reports
+LSO disabled; these results do not prove a physical NIC's hardware LSO path.
+
 This is a bounded single-guest lab helper, not the launcher bridge feature.
-Host large-send segmentation, fragmented host traffic, IPv6 routing/fragment/IPsec
+Hardware-specific offload behavior, fragmented host traffic, IPv6 routing/fragment/IPsec
 headers, throughput, VLAN wire behavior, sleep and broader adapter/version
 coverage remain unaccepted. Unsupported captured host packets stop the helper
 rather than changing the NIC's offload configuration. Physical wired Ethernet,
