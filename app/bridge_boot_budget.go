@@ -35,4 +35,4 @@ func (b *bridgeBootBudget) tick() {
 		b.ticks++
 	}
 }
-func (b *bridgeBootBudget) expired() bool { return b.ticks >= bridgeBootTimeoutTicks }
+func (b *bridgeBootBudget) expired() bool { return b.running && b.ticks >= bridgeBootTimeoutTicks }

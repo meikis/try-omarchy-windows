@@ -44,4 +44,12 @@ func TestBridgeBootBudgetPreservesPausedVM(t *testing.T) {
 	if b.ticks != bridgeBootTimeoutTicks {
 		t.Fatal("counter exceeded its bound")
 	}
+	b.observe(`{"event":"STOP"}`)
+	if b.expired() {
+		t.Fatal("exhausted budget stopped a manually paused VM")
+	}
+	b.observe(`{"event":"RESUME"}`)
+	if !b.expired() {
+		t.Fatal("resuming an unready VM discarded its exhausted budget")
+	}
 }
