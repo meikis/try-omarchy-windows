@@ -1,0 +1,10 @@
+{
+  "version": "1.89",
+  "source": "https://npcap.com/dist/npcap-1.89.exe",
+  "installerSha256": "8aed85e900d783d1308506e919587d3e540451947af8a82f2d04f819e44305cc",
+  "files": {
+    "drivers/npcap.sys": "ecd194d91257fa145a6100065f1c98d599e73437355f939929ccb027c2c69004",
+    "Npcap/wpcap.dll": "aa2c63a5a0b732e2aaec6660f5d97727d857fcfd315084940859e5fe71a65c24",
+    "Npcap/Packet.dll": "1181ba48394dfd64e281d43850e41355bd6a0ed2523819980820221c0be09d74"
+  }
+}

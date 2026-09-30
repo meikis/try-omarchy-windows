@@ -159,6 +159,79 @@ not establish behavior on physical Ethernet, supported Windows 10 builds,
 Secure Boot/HVCI, DHCP servers that rely on `chaddr`, or multiple guests. NAT
 and existing LAN forwarding remain the supported launcher paths.
 
+## Npcap forwarding experiment
+
+The native Windows bridge's MAC translation and raw EtherType limit are separate
+from the TAP attachment failure. A disposable lab now also has a user-mode
+forwarding path using manually installed [Npcap 1.89](https://npcap.com/).
+Its running driver has a valid Microsoft signature. The
+[pinned installed files](../scripts/network/npcap-1.89.lock.json) include the
+kernel driver and signed Nmap DLLs. The helper verifies those files and the
+running service before loading from the system Npcap directory.
+
+Npcap is a separate dependency. Its [license](https://npcap.com/guide/#npcap-license)
+allows limited end-user installations and prohibits redistribution without
+permission. No installer, driver or DLL is bundled here. The helper never
+downloads, installs, upgrades or silently configures Npcap. This experiment
+does not establish a redistribution or product licensing decision.
+
+The dedicated TAP must have a saved binding baseline and IPv4/IPv6 already
+unbound by an explicit administrator lab action. Start a diskless QEMU fixture
+with that TAP, a fixed guest MAC and a separate private NAT service NIC. Keep
+an independent management adapter and local console available. Do not create a
+native Windows bridge at the same time. Then use a fresh administrator
+PowerShell process:
+
+```powershell
+powershell.exe -NoProfile -File scripts/network/npcap-lab.ps1 `
+  -WiredGuid '<wired-guid>' -WiredPnp '<wired-pnp>' `
+  -TapGuid '<owned-tap-guid>' -TapPnp '<owned-tap-pnp>' `
+  -GuestMac '52:54:00:16:66:01' `
+  -DriverDirectory C:\BridgeLab\dist.win10\amd64 `
+  -QemuProcessId <fixture-pid> -QemuExecutable C:\BridgeLab\qemu-system-x86_64w.exe `
+  -ProbeName bridge-peer.example -ProbeAddress 192.0.2.1 -ProbePort 443 `
+  -Seconds 60 -DisposableLab -LocalConsole -DedicatedTap
+```
+
+Require Npcap's administrator-only option, without wireless capture or WinPcap
+compatibility. Exact GUID/PNP, wired DHCP/DNS/TCP, pinned TAP driver, running
+QEMU, its selected TAP and guest MAC, existing-bridge restrictions and binding
+checks gate startup. A per-TAP mutex rejects another helper. Link loss,
+identity/binding changes or QEMU exit stop forwarding. The duration is bounded
+to 600 seconds. Native handles close after workers stop; an unresponsive worker
+terminates the lab process instead of closing a handle under it. Process exit
+releases capture handles. This helper changes no bindings, DHCP, DNS, routes,
+firewall or offload settings, and has no automatic adapter or NAT fallback.
+After it exits, stop the owned fixture and restore the saved dedicated-TAP
+bindings or remove that exact owned device. Do not uninstall a shared driver.
+
+The pump forwards only the fixed guest's source frames and peer frames addressed
+to that guest or to broadcast/multicast. It preserves Ethernet MACs. Per-handle
+receive injection delivers guest frames to Windows without a system-wide
+Npcap registry change. Windows host captures can contain unfinished hardware
+checksums. The pump completes IPv4, TCP, UDP and ICMP checksums on captured host
+frames before sending them through TAP. Peer and guest raw Ethernet payloads
+are not rewritten. Packet tests include a captured pre-offload SYN and its
+hardware-completed wire vector, IPv4/IPv6 UDP, VLAN preservation, malformed
+frames and startup arguments. Both PowerShell dialects run these checks in CI.
+
+The native helper passed unchanged guest Ethernet MAC and DHCP `chaddr`, a
+bidirectional experimental EtherType `0x88b5` exchange, LAN DHCP/DNS/TCP, direct
+Windows and peer TCP, IPv4 broadcast/multicast, explicit-address IPv6 ping and
+private services. Exact-GUID adapter rename preserved forwarding. Virtual
+Ethernet loss stopped the helper and retained independent management access;
+reconnection and a fresh helper run recovered forwarding. These are controlled
+virtual-Ethernet results.
+
+This is a bounded single-guest lab helper, not the launcher bridge feature.
+Host large-send segmentation, fragmented host traffic, IPv6 routing/fragment/IPsec
+headers, throughput, VLAN wire behavior, sleep and broader adapter/version
+coverage remain unaccepted. Unsupported captured host packets stop the helper
+rather than changing the NIC's offload configuration. Physical wired Ethernet,
+Secure Boot/HVCI, Windows 10, administrator cancellation and normal guest
+integration still need validation. `BridgeAccepted` remains false. NAT and
+existing forwarding remain the launcher defaults.
+
 ## Launcher integration still required
 
 Keep the LAN NIC separate from a private NAT service NIC. Existing guest

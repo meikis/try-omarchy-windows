@@ -84,6 +84,7 @@ jobs:
           scripts/network/test-bridge-transaction.ps1
           scripts/network/test-bridge-datapath.ps1
           scripts/network/test-bridge-native.ps1
+          scripts/network/test-npcap-frames.ps1
 
       - name: Test bridge lab safety in Windows PowerShell
         shell: powershell
@@ -92,6 +93,7 @@ jobs:
           scripts/network/test-bridge-transaction.ps1
           scripts/network/test-bridge-datapath.ps1
           scripts/network/test-bridge-native.ps1
+          scripts/network/test-npcap-frames.ps1
 
   guest-contract:
     name: Guest contract
